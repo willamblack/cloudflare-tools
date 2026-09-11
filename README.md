@@ -40,6 +40,40 @@
 
 ### 方式一：Docker 部署（推荐）
 
+#### 使用 GHCR 预构建镜像
+
+每次推送到 `main` 分支都会发布 `latest`，推送 Git 标签时会发布同名镜像标签；也可以在 GitHub Actions 中手动运行工作流并填写镜像版本。例如 `0.01` 版本：
+
+```bash
+docker pull ghcr.io/willamblack/cloudflare-tools:0.01
+```
+
+准备配置和持久化目录：
+
+```bash
+mkdir -p data/certs
+cp Server/config.yaml.example data/config.yaml
+```
+
+修改 `data/config.yaml` 中的管理员用户名和密码后启动：
+
+```bash
+docker run -d \
+  --name cloudflare-tools \
+  --restart unless-stopped \
+  -p 28080:8080 \
+  -e TZ=Asia/Shanghai \
+  -e DATA_DIR=/data \
+  -v "$(pwd)/data/config.yaml:/data/config.yaml:ro" \
+  -v "$(pwd)/data/accounts.json:/data/accounts.json" \
+  -v "$(pwd)/data/certs:/data/certs" \
+  ghcr.io/willamblack/cloudflare-tools:0.01
+```
+
+首次发布后，如需匿名 `docker pull`，请在 GitHub 包设置中将该 Container package 的可见性改为 Public。GitHub Actions 使用仓库自带的 `GITHUB_TOKEN` 发布，不需要额外创建 PAT。
+
+#### 本地构建
+
 1. 确保已安装 Docker 和 Docker Compose
 
 2. 配置管理员账号
@@ -68,8 +102,8 @@ chmod +x docker-start.sh
 
 1. 克隆项目
 ```bash
-git clone https://github.com/xkatld/Cloudflare-Tools.git
-cd Cloudflare-Tools
+git clone https://github.com/willamblack/cloudflare-tools.git
+cd cloudflare-tools
 ```
 
 2. 配置管理员账号

@@ -1,5 +1,6 @@
 services:
   cloudflare-tools:
+    image: ghcr.io/willamblack/cloudflare-tools:latest
     build:
       context: .
       dockerfile: Dockerfile
