@@ -1,3 +1,5 @@
+import { escapeHTML } from '../utils.js';
+
 export class AddZoneModule {
   static render(container, state) {
     container.innerHTML = `
@@ -17,7 +19,7 @@ export class AddZoneModule {
               <div class="mb-3">
                 <label class="form-label fw-bold">选择 Cloudflare 账号</label>
                 <select id="zone-acc-id" class="form-select border-2 shadow-none">
-                  ${(window.accountsCache || []).map(a => `<option value="${a.id}">${a.name} (${a.email})</option>`).join('')}
+                  ${(window.accountsCache || []).map(a => `<option value="${escapeHTML(a.id)}">${escapeHTML(a.name)} (${escapeHTML(a.email)})</option>`).join('')}
                 </select>
               </div>
               <div class="mb-3">
@@ -75,7 +77,7 @@ export class AddZoneModule {
           <tr><th>域名</th><th>状态</th><th>NS 信息</th></tr>
         </thead>
         <tbody>
-          ${domains.map(d => `<tr><td>${d}</td><td><span class="badge bg-secondary-lt text-dark">队列中</span></td><td>-</td></tr>`).join('')}
+          ${domains.map(d => `<tr><td>${escapeHTML(d)}</td><td><span class="badge bg-secondary-lt text-dark">队列中</span></td><td>-</td></tr>`).join('')}
         </tbody>
       </table>
     `;
@@ -96,10 +98,10 @@ export class AddZoneModule {
           <tbody>
             ${data.map(r => `
               <tr class="bg-white">
-                <td><div class="fw-bold text-dark">${r.domain}</div></td>
+                <td><div class="fw-bold text-dark">${escapeHTML(r.domain)}</div></td>
                 <td>${r.success ? '<span class="badge bg-success-lt text-success fw-bold">成功</span>' : '<span class="badge bg-danger-lt text-danger fw-bold">失败</span>'}</td>
                 <td>
-                  ${r.success && r.nameServers ? r.nameServers.map(ns => `<div class="small text-muted font-monospace">${ns}</div>`).join('') : `<span class="text-danger small">${r.message}</span>`}
+                  ${r.success && r.nameServers ? r.nameServers.map(ns => `<div class="small text-muted font-monospace">${escapeHTML(ns)}</div>`).join('') : `<span class="text-danger small">${escapeHTML(r.message)}</span>`}
                 </td>
               </tr>
             `).join('')}

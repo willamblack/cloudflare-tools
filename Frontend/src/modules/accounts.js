@@ -1,3 +1,5 @@
+import { escapeHTML } from '../utils.js';
+
 export class AccountsModule {
     static currentPage = 1;
     static pageSize = 25;
@@ -76,7 +78,7 @@ export class AccountsModule {
                               <span class="input-group-text bg-light border-end-0 pe-0">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-sm text-muted" width="20" height="20" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" /><path d="M21 21l-6 -6" /></svg>
                               </span>
-                              <input type="text" class="form-control form-control-sm border-start-0 ps-1" id="search-accounts" placeholder="搜索账号或邮箱" value="${this.searchQuery}">
+                              <input type="text" class="form-control form-control-sm border-start-0 ps-1" id="search-accounts" placeholder="搜索账号或邮箱" value="${escapeHTML(this.searchQuery)}">
                             </div>
                           </div>
                           <select class="form-select form-select-sm" id="status-filter" style="width: 140px;">
@@ -135,20 +137,18 @@ export class AccountsModule {
                 return `
                 <tr class="bg-white">
                   <td class="ps-3">
-                    <input type="checkbox" class="form-check-input account-checkbox" data-id="${acc.id}" ${this.selectedAccounts.has(acc.id) ? 'checked' : ''}>
+                    <input type="checkbox" class="form-check-input account-checkbox" data-id="${escapeHTML(acc.id)}" ${this.selectedAccounts.has(acc.id) ? 'checked' : ''}>
                   </td>
-                  <td><div class="fw-bold text-dark">${acc.name}</div></td>
-                  <td class="text-secondary">${acc.email}</td>
+                  <td><div class="fw-bold text-dark">${escapeHTML(acc.name)}</div></td>
+                  <td class="text-secondary">${escapeHTML(acc.email)}</td>
                   <td>
-                    <code class="bg-azure-lt border-0 px-2 py-1 rounded text-azure fw-bold" onclick="window.toggleKey('${acc.id}', this)" style="cursor: pointer;">
-                      ****${acc.key.slice(-4)}
-                    </code>
+                    <code class="bg-azure-lt border-0 px-2 py-1 rounded text-azure fw-bold">已安全保存</code>
                   </td>
                   <td>${statusBadge}</td>
                   <td>
                     <div class="d-flex justify-content-center gap-2">
-                      <button class="btn btn-secondary btn-sm px-3" onclick="window.testExistingAccount('${acc.id}', this)">测试</button>
-                      <button class="btn btn-danger btn-sm px-3" onclick="window.deleteAccount('${acc.id}')">删除</button>
+                      <button class="btn btn-secondary btn-sm px-3 account-test" data-id="${escapeHTML(acc.id)}">测试</button>
+                      <button class="btn btn-danger btn-sm px-3 account-delete" data-id="${escapeHTML(acc.id)}">删除</button>
                     </div>
                   </td>
                 </tr>`;
@@ -306,6 +306,13 @@ export class AccountsModule {
         if (batchDeleteBtn) {
             batchDeleteBtn.addEventListener('click', () => this.batchDelete(container, allAccounts));
         }
+
+		container.querySelectorAll('.account-test').forEach(btn => {
+			btn.addEventListener('click', () => window.testExistingAccount(btn.dataset.id, btn));
+		});
+		container.querySelectorAll('.account-delete').forEach(btn => {
+			btn.addEventListener('click', () => window.deleteAccount(btn.dataset.id));
+		});
     }
 
     static getFilteredAccounts(allAccounts) {
@@ -347,7 +354,7 @@ export class AccountsModule {
                         'Content-Type': 'application/json', 
                         'Authorization': localStorage.getItem('token') 
                     },
-                    body: JSON.stringify({ email: acc.email, key: acc.key })
+                    body: JSON.stringify({ id: acc.id })
                 });
                 const data = await res.json();
                 if (data.success) {

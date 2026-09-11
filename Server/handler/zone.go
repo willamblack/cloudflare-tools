@@ -30,16 +30,12 @@ func BatchAddZones(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
+	if !validateBatch(c, len(req.Domains)) {
+		return
 	}
 
-	if acc == nil {
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
@@ -51,6 +47,8 @@ func BatchAddZones(c *gin.Context) {
 		wg.Add(1)
 		go func(idx int, dom string) {
 			defer wg.Done()
+			acquireBatchSlot()
+			defer releaseBatchSlot()
 			success, msg, ns := addZoneToCloudflare(acc, dom)
 			results[idx] = ZoneResult{
 				Domain:      dom,
@@ -77,7 +75,7 @@ func addZoneToCloudflare(acc *models.Account, domain string) (bool, string, []st
 	req.Header.Add("X-Auth-Key", acc.Key)
 	req.Header.Add("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := cloudflareClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, "Request failed", nil
@@ -131,16 +129,12 @@ func BatchDeleteZones(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
+	if !validateBatch(c, len(req.Domains)) {
+		return
 	}
 
-	if acc == nil {
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
@@ -152,6 +146,8 @@ func BatchDeleteZones(c *gin.Context) {
 		wg.Add(1)
 		go func(idx int, dom string) {
 			defer wg.Done()
+			acquireBatchSlot()
+			defer releaseBatchSlot()
 			success, msg := deleteZoneFromCloudflare(acc, dom)
 			results[idx] = DeleteZoneResult{
 				Domain:  dom,
@@ -166,37 +162,16 @@ func BatchDeleteZones(c *gin.Context) {
 }
 
 func deleteZoneFromCloudflare(acc *models.Account, domain string) (bool, string) {
-	reqGet, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones?name=%s", domain), nil)
-	reqGet.Header.Add("X-Auth-Email", acc.Email)
-	reqGet.Header.Add("X-Auth-Key", acc.Key)
-
-	client := &http.Client{}
-	resp, err := client.Do(reqGet)
+	zoneID, err := getZoneID(acc, domain)
 	if err != nil {
-		return false, "Request failed"
+		return false, err.Error()
 	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []struct {
-			ID string `json:"id"`
-		} `json:"result"`
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
-	if len(result.Result) == 0 {
-		return false, "Zone not found"
-	}
-
-	zoneID := result.Result[0].ID
 
 	reqDel, _ := http.NewRequest("DELETE", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s", zoneID), nil)
 	reqDel.Header.Add("X-Auth-Email", acc.Email)
 	reqDel.Header.Add("X-Auth-Key", acc.Key)
 
-	respDel, err := client.Do(reqDel)
+	respDel, err := cloudflareClient.Do(reqDel)
 	if err != nil {
 		return false, "Delete request failed"
 	}
@@ -243,15 +218,8 @@ func ExportZones(c *gin.Context) {
 		return
 	}
 
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
-	}
-
-	if acc == nil {
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
@@ -276,7 +244,7 @@ func fetchAllZones(acc *models.Account) ([]ExportZoneResult, error) {
 		req.Header.Add("X-Auth-Email", acc.Email)
 		req.Header.Add("X-Auth-Key", acc.Key)
 
-		client := &http.Client{}
+		client := cloudflareClient
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("Request failed")

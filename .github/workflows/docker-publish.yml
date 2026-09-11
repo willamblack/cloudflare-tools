@@ -5,7 +5,7 @@ on:
     branches:
       - main
     tags:
-      - "*"
+      - "v[0-9]*"
   pull_request:
     branches:
       - main
@@ -16,6 +16,11 @@ on:
         required: true
         default: "0.01"
         type: string
+      publish_latest:
+        description: Also update latest (normally only stable Git tags should do this)
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: docker-${{ github.workflow }}-${{ github.ref }}
@@ -46,6 +51,7 @@ jobs:
         working-directory: Frontend
         run: |
           npm ci
+          npm test
           npm run build
 
       - name: Prepare embedded frontend
@@ -65,9 +71,57 @@ jobs:
         working-directory: Server
         run: go vet ./...
 
+  smoke:
+    name: Build and run container
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Build smoke-test image
+        run: docker build --tag cloudflare-tools:smoke .
+
+      - name: Start container and verify HTTP/authentication
+        env:
+          ADMIN_USERNAME: smoke-admin
+          ADMIN_PASSWORD: smoke-test-password-2026
+          JWT_SECRET: smoke-test-jwt-secret-with-at-least-32-characters
+        run: |
+          container_id="$(docker run --detach --publish 127.0.0.1:18080:8080 \
+            --env ADMIN_USERNAME --env ADMIN_PASSWORD --env JWT_SECRET \
+            cloudflare-tools:smoke)"
+          trap 'docker logs "$container_id"; docker rm --force "$container_id"' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:18080/healthz; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent --show-error http://127.0.0.1:18080/ | grep --quiet '<title>Cloudflare 批量管理工具</title>'
+          unauthenticated_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:18080/api/certs/download/example.zip)"
+          test "$unauthenticated_status" = "401"
+          token="$(curl --fail --silent --show-error \
+            --header 'Content-Type: application/json' \
+            --data "{\"username\":\"$ADMIN_USERNAME\",\"password\":\"$ADMIN_PASSWORD\"}" \
+            http://127.0.0.1:18080/api/login | jq --raw-output .token)"
+          test -n "$token"
+          test "$(curl --fail --silent --show-error --header "Authorization: Bearer $token" \
+            http://127.0.0.1:18080/api/accounts)" = "[]"
+
   publish:
     name: Build and publish image
-    needs: validate
+    needs:
+      - validate
+      - smoke
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -84,12 +138,21 @@ jobs:
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate manual version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid Docker version tag: $VERSION" >&2
+            exit 1
+          fi
 
       - name: Generate image metadata
         id: meta
@@ -97,11 +160,11 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
+            type=raw,value=edge,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=match,pattern=^v(.*)$,group=1
             type=ref,event=tag
             type=raw,value=${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
-            type=raw,value=latest,enable=${{ github.event_name != 'pull_request' && (github.ref_type == 'tag' || github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch') }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.publish_latest) }}
             type=sha,prefix=sha-
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -113,7 +176,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}

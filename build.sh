@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -eu
+
 PROJECT_NAME="cloudflare-tools"
 DIST_DIR="releases"
 
@@ -9,7 +11,7 @@ build_frontend() {
     
     if [ ! -d "node_modules" ]; then
         echo "==> 安装前端依赖..."
-        npm install
+        npm ci
     fi
     
     npm run build
@@ -26,15 +28,15 @@ build_backend() {
     
     echo "==> 构建后端: ${os}/${arch}..."
     cd Server
-    GOOS=$os GOARCH=$arch go build -o "${binary_name}" main.go
-    
-    if [ ! -f "config.yaml" ]; then
-        echo "admin: { username: 'admin', password: 'password' }" > config.yaml
-    fi
+    CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags="-s -w" -o "${binary_name}" .
 
-    mkdir -p "../${DIST_DIR}"
-    tar -zcvf "../${DIST_DIR}/${output_name}.tar.gz" "${binary_name}" config.yaml
-    rm "${binary_name}"
+	mkdir -p "../${DIST_DIR}"
+	stage_dir="$(mktemp -d)"
+	cp "${binary_name}" "${stage_dir}/"
+	cp config.yaml.example "${stage_dir}/config.yaml"
+	tar -zcvf "../${DIST_DIR}/${output_name}.tar.gz" -C "${stage_dir}" "${binary_name}" config.yaml
+	rm -rf "${stage_dir}"
+	rm "${binary_name}"
     cd ..
 }
 
@@ -43,7 +45,7 @@ mkdir -p "${DIST_DIR}"
 
 build_frontend
 
-case "$1" in
+case "${1:-}" in
     "amd64")
         build_backend "linux" "amd64"
         ;;

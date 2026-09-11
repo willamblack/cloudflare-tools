@@ -5,18 +5,18 @@ import (
 	"cloudflare-tools/server/models"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
 )
 
 type BatchCopyRulesRequest struct {
-	AccountID      string   `json:"accountId"`
-	SourceDomain   string   `json:"sourceDomain"`
-	TargetDomains  []string `json:"targetDomains"`
-	RuleTypes      []string `json:"ruleTypes"`
+	AccountID     string   `json:"accountId"`
+	SourceDomain  string   `json:"sourceDomain"`
+	TargetDomains []string `json:"targetDomains"`
+	RuleTypes     []string `json:"ruleTypes"`
 }
 
 type CopyRulesResult struct {
@@ -32,16 +32,12 @@ func BatchCopyRules(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
+	if !validateBatch(c, len(req.TargetDomains)) {
+		return
 	}
 
-	if acc == nil {
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
@@ -59,7 +55,9 @@ func BatchCopyRules(c *gin.Context) {
 		wg.Add(1)
 		go func(idx int, dom string) {
 			defer wg.Done()
-			success, msg, count := copyRulesToDomain(acc, sourceZoneID, dom, req.RuleTypes)
+			acquireBatchSlot()
+			defer releaseBatchSlot()
+			success, msg, count := copyRulesToDomain(acc, sourceZoneID, req.SourceDomain, dom, req.RuleTypes)
 			results[idx] = CopyRulesResult{
 				Domain:  dom,
 				Success: success,
@@ -73,7 +71,7 @@ func BatchCopyRules(c *gin.Context) {
 	c.JSON(http.StatusOK, results)
 }
 
-func copyRulesToDomain(acc *models.Account, sourceZoneID string, targetDomain string, ruleTypes []string) (bool, string, int) {
+func copyRulesToDomain(acc *models.Account, sourceZoneID, sourceDomain, targetDomain string, ruleTypes []string) (bool, string, int) {
 	targetZoneID, err := getZoneIDByDomain(acc, targetDomain)
 	if err != nil {
 		return false, "Target zone not found", 0
@@ -84,13 +82,13 @@ func copyRulesToDomain(acc *models.Account, sourceZoneID string, targetDomain st
 	for _, ruleType := range ruleTypes {
 		switch ruleType {
 		case "page_rules":
-			count := copyPageRules(acc, sourceZoneID, targetZoneID, targetDomain)
+			count := copyPageRules(acc, sourceZoneID, targetZoneID, sourceDomain, targetDomain)
 			totalCopied += count
 		case "firewall_rules":
-			count := copyFirewallRules(acc, sourceZoneID, targetZoneID)
+			count := copyFirewallRules(acc, sourceZoneID, targetZoneID, sourceDomain, targetDomain)
 			totalCopied += count
 		case "rate_limiting":
-			count := copyRateLimitRules(acc, sourceZoneID, targetZoneID)
+			count := copyRateLimitRules(acc, sourceZoneID, targetZoneID, sourceDomain, targetDomain)
 			totalCopied += count
 		}
 	}
@@ -103,160 +101,98 @@ func copyRulesToDomain(acc *models.Account, sourceZoneID string, targetDomain st
 }
 
 func getZoneIDByDomain(acc *models.Account, domain string) (string, error) {
-	req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones?name=%s", domain), nil)
-	req.Header.Add("X-Auth-Email", acc.Email)
-	req.Header.Add("X-Auth-Key", acc.Key)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("Request failed")
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []struct {
-			ID string `json:"id"`
-		} `json:"result"`
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
-	if len(result.Result) == 0 {
-		return "", fmt.Errorf("Zone not found")
-	}
-
-	return result.Result[0].ID, nil
+	return getZoneID(acc, domain)
 }
 
-func copyPageRules(acc *models.Account, sourceZoneID string, targetZoneID string, targetDomain string) int {
-	req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/pagerules", sourceZoneID), nil)
-	req.Header.Add("X-Auth-Email", acc.Email)
-	req.Header.Add("X-Auth-Key", acc.Key)
+func copyPageRules(acc *models.Account, sourceZoneID, targetZoneID, sourceDomain, targetDomain string) int {
+	return copyRuleCollection(acc, "pagerules", sourceZoneID, targetZoneID, sourceDomain, targetDomain)
+}
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+func copyFirewallRules(acc *models.Account, sourceZoneID, targetZoneID, sourceDomain, targetDomain string) int {
+	return copyRuleCollection(acc, "firewall/rules", sourceZoneID, targetZoneID, sourceDomain, targetDomain)
+}
+
+func copyRateLimitRules(acc *models.Account, sourceZoneID, targetZoneID, sourceDomain, targetDomain string) int {
+	return copyRuleCollection(acc, "rate_limits", sourceZoneID, targetZoneID, sourceDomain, targetDomain)
+}
+
+func copyRuleCollection(acc *models.Account, resource, sourceZoneID, targetZoneID, sourceDomain, targetDomain string) int {
+	rules, err := listRuleMaps(acc, sourceZoneID, resource)
 	if err != nil {
 		return 0
 	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []map[string]interface{} `json:"result"`
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
 	count := 0
-	for _, rule := range result.Result {
-		delete(rule, "id")
-		delete(rule, "created_on")
-		delete(rule, "modified_on")
-
-		ruleBody, _ := json.Marshal(rule)
-		postReq, _ := http.NewRequest("POST", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/pagerules", targetZoneID), bytes.NewBuffer(ruleBody))
+	for _, rule := range rules {
+		rewriteRuleValue(rule, sourceDomain, targetDomain)
+		ruleBody, err := json.Marshal(rule)
+		if err != nil {
+			continue
+		}
+		endpoint := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/%s", targetZoneID, resource)
+		postReq, _ := http.NewRequest("POST", endpoint, bytes.NewBuffer(ruleBody))
 		postReq.Header.Add("X-Auth-Email", acc.Email)
 		postReq.Header.Add("X-Auth-Key", acc.Key)
 		postReq.Header.Add("Content-Type", "application/json")
-
-		postResp, err := client.Do(postReq)
-		if err == nil && postResp.StatusCode == http.StatusOK {
+		postResp, err := cloudflareClient.Do(postReq)
+		if err == nil && (postResp.StatusCode == http.StatusOK || postResp.StatusCode == http.StatusCreated) {
 			count++
 		}
 		if postResp != nil {
 			postResp.Body.Close()
 		}
 	}
-
 	return count
 }
 
-func copyFirewallRules(acc *models.Account, sourceZoneID string, targetZoneID string) int {
-	req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/firewall/rules", sourceZoneID), nil)
-	req.Header.Add("X-Auth-Email", acc.Email)
-	req.Header.Add("X-Auth-Key", acc.Key)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []map[string]interface{} `json:"result"`
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
-	count := 0
-	for _, rule := range result.Result {
-		delete(rule, "id")
-		delete(rule, "created_on")
-		delete(rule, "modified_on")
-
-		ruleBody, _ := json.Marshal(rule)
-		postReq, _ := http.NewRequest("POST", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/firewall/rules", targetZoneID), bytes.NewBuffer(ruleBody))
-		postReq.Header.Add("X-Auth-Email", acc.Email)
-		postReq.Header.Add("X-Auth-Key", acc.Key)
-		postReq.Header.Add("Content-Type", "application/json")
-
-		postResp, err := client.Do(postReq)
-		if err == nil && postResp.StatusCode == http.StatusOK {
-			count++
+func rewriteRuleValue(value interface{}, sourceDomain, targetDomain string) {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		for key, child := range typed {
+			switch key {
+			case "id", "created_on", "modified_on":
+				delete(typed, key)
+				continue
+			}
+			if text, ok := child.(string); ok {
+				typed[key] = strings.ReplaceAll(text, sourceDomain, targetDomain)
+				continue
+			}
+			rewriteRuleValue(child, sourceDomain, targetDomain)
 		}
-		if postResp != nil {
-			postResp.Body.Close()
+	case []interface{}:
+		for _, child := range typed {
+			rewriteRuleValue(child, sourceDomain, targetDomain)
 		}
 	}
-
-	return count
 }
 
-func copyRateLimitRules(acc *models.Account, sourceZoneID string, targetZoneID string) int {
-	req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/rate_limits", sourceZoneID), nil)
-	req.Header.Add("X-Auth-Email", acc.Email)
-	req.Header.Add("X-Auth-Key", acc.Key)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []map[string]interface{} `json:"result"`
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
-	count := 0
-	for _, rule := range result.Result {
-		delete(rule, "id")
-		delete(rule, "created_on")
-		delete(rule, "modified_on")
-
-		ruleBody, _ := json.Marshal(rule)
-		postReq, _ := http.NewRequest("POST", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/rate_limits", targetZoneID), bytes.NewBuffer(ruleBody))
-		postReq.Header.Add("X-Auth-Email", acc.Email)
-		postReq.Header.Add("X-Auth-Key", acc.Key)
-		postReq.Header.Add("Content-Type", "application/json")
-
-		postResp, err := client.Do(postReq)
-		if err == nil && postResp.StatusCode == http.StatusOK {
-			count++
+func listRuleMaps(acc *models.Account, zoneID, resource string) ([]map[string]interface{}, error) {
+	var all []map[string]interface{}
+	for page := 1; ; page++ {
+		endpoint := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/%s?page=%d&per_page=50", zoneID, resource, page)
+		req, _ := http.NewRequest("GET", endpoint, nil)
+		req.Header.Add("X-Auth-Email", acc.Email)
+		req.Header.Add("X-Auth-Key", acc.Key)
+		resp, err := cloudflareClient.Do(req)
+		if err != nil {
+			return nil, err
 		}
-		if postResp != nil {
-			postResp.Body.Close()
+		var result struct {
+			Result     []map[string]interface{} `json:"result"`
+			ResultInfo struct {
+				TotalPages int `json:"total_pages"`
+			} `json:"result_info"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || decodeErr != nil {
+			return nil, fmt.Errorf("Cloudflare returned an invalid rule response")
+		}
+		all = append(all, result.Result...)
+		if len(result.Result) < 50 || (result.ResultInfo.TotalPages > 0 && page >= result.ResultInfo.TotalPages) {
+			return all, nil
 		}
 	}
-
-	return count
 }
 
 type BatchDeleteRulesRequest struct {
@@ -278,16 +214,12 @@ func BatchDeleteRules(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
+	if !validateBatch(c, len(req.Domains)) {
+		return
 	}
 
-	if acc == nil {
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
@@ -299,6 +231,8 @@ func BatchDeleteRules(c *gin.Context) {
 		wg.Add(1)
 		go func(idx int, dom string) {
 			defer wg.Done()
+			acquireBatchSlot()
+			defer releaseBatchSlot()
 			success, msg, count := deleteRulesFromDomain(acc, dom, req.RuleTypes)
 			results[idx] = DeleteRulesResult{
 				Domain:  dom,
@@ -343,111 +277,33 @@ func deleteRulesFromDomain(acc *models.Account, domain string, ruleTypes []strin
 }
 
 func deletePageRules(acc *models.Account, zoneID string) int {
-	req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/pagerules", zoneID), nil)
-	req.Header.Add("X-Auth-Email", acc.Email)
-	req.Header.Add("X-Auth-Key", acc.Key)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []struct {
-			ID string `json:"id"`
-		} `json:"result"`
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
-	count := 0
-	for _, rule := range result.Result {
-		delReq, _ := http.NewRequest("DELETE", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/pagerules/%s", zoneID, rule.ID), nil)
-		delReq.Header.Add("X-Auth-Email", acc.Email)
-		delReq.Header.Add("X-Auth-Key", acc.Key)
-
-		delResp, err := client.Do(delReq)
-		if err == nil && delResp.StatusCode == http.StatusOK {
-			count++
-		}
-		if delResp != nil {
-			delResp.Body.Close()
-		}
-	}
-
-	return count
+	return deleteRuleCollection(acc, zoneID, "pagerules")
 }
 
 func deleteFirewallRules(acc *models.Account, zoneID string) int {
-	req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/firewall/rules", zoneID), nil)
-	req.Header.Add("X-Auth-Email", acc.Email)
-	req.Header.Add("X-Auth-Key", acc.Key)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []struct {
-			ID string `json:"id"`
-		} `json:"result"`
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
-	count := 0
-	for _, rule := range result.Result {
-		delReq, _ := http.NewRequest("DELETE", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/firewall/rules/%s", zoneID, rule.ID), nil)
-		delReq.Header.Add("X-Auth-Email", acc.Email)
-		delReq.Header.Add("X-Auth-Key", acc.Key)
-
-		delResp, err := client.Do(delReq)
-		if err == nil && delResp.StatusCode == http.StatusOK {
-			count++
-		}
-		if delResp != nil {
-			delResp.Body.Close()
-		}
-	}
-
-	return count
+	return deleteRuleCollection(acc, zoneID, "firewall/rules")
 }
 
 func deleteRateLimitRules(acc *models.Account, zoneID string) int {
-	req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/rate_limits", zoneID), nil)
-	req.Header.Add("X-Auth-Email", acc.Email)
-	req.Header.Add("X-Auth-Key", acc.Key)
+	return deleteRuleCollection(acc, zoneID, "rate_limits")
+}
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+func deleteRuleCollection(acc *models.Account, zoneID, resource string) int {
+	rules, err := listRuleMaps(acc, zoneID, resource)
 	if err != nil {
 		return 0
 	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []struct {
-			ID string `json:"id"`
-		} `json:"result"`
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
 	count := 0
-	for _, rule := range result.Result {
-		delReq, _ := http.NewRequest("DELETE", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/rate_limits/%s", zoneID, rule.ID), nil)
+	for _, rule := range rules {
+		id, ok := rule["id"].(string)
+		if !ok || id == "" {
+			continue
+		}
+		endpoint := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/%s/%s", zoneID, resource, id)
+		delReq, _ := http.NewRequest("DELETE", endpoint, nil)
 		delReq.Header.Add("X-Auth-Email", acc.Email)
 		delReq.Header.Add("X-Auth-Key", acc.Key)
-
-		delResp, err := client.Do(delReq)
+		delResp, err := cloudflareClient.Do(delReq)
 		if err == nil && delResp.StatusCode == http.StatusOK {
 			count++
 		}
@@ -455,6 +311,5 @@ func deleteRateLimitRules(acc *models.Account, zoneID string) int {
 			delResp.Body.Close()
 		}
 	}
-
 	return count
 }

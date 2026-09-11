@@ -1,3 +1,5 @@
+import { escapeHTML } from '../utils.js';
+
 export class ProxyToggleModule {
   static async render(container, state) {
     const res = await fetch('/api/accounts', { headers: { 'Authorization': state.token || localStorage.getItem('token') } });
@@ -24,7 +26,7 @@ export class ProxyToggleModule {
               <div class="mb-3">
                 <label class="form-label fw-bold">选择 Cloudflare 账号</label>
                 <select id="proxy-account" class="form-select border-2 shadow-none">
-                  ${(accounts || []).map(a => `<option value="${a.id}">${a.name} (${a.email})</option>`).join('')}
+                  ${(accounts || []).map(a => `<option value="${escapeHTML(a.id)}">${escapeHTML(a.name)} (${escapeHTML(a.email)})</option>`).join('')}
                 </select>
               </div>
               <div class="mb-3">
@@ -110,7 +112,7 @@ export class ProxyToggleModule {
           <tr><th>域名</th><th>状态</th><th>操作数量</th></tr>
         </thead>
         <tbody>
-          ${domains.map(d => `<tr><td>${d}</td><td><span class="badge bg-secondary-lt text-dark">队列中</span></td><td>-</td></tr>`).join('')}
+          ${domains.map(d => `<tr><td>${escapeHTML(d)}</td><td><span class="badge bg-secondary-lt text-dark">队列中</span></td><td>-</td></tr>`).join('')}
         </tbody>
       </table>
     `;
@@ -141,11 +143,11 @@ export class ProxyToggleModule {
           <tbody>
             ${data.map(r => `
               <tr class="bg-white">
-                <td><div class="fw-bold text-dark">${r.domain}</div></td>
+                <td><div class="fw-bold text-dark">${escapeHTML(r.domain)}</div></td>
                 <td>
                   ${r.success 
-                    ? `<span class="badge bg-success-lt text-success fw-bold">成功</span><div class="small text-muted mt-1">${r.message}</div>` 
-                    : `<span class="badge bg-danger-lt text-danger fw-bold">失败</span><div class="small text-danger mt-1">${r.message}</div>`
+                    ? `<span class="badge bg-success-lt text-success fw-bold">成功</span><div class="small text-muted mt-1">${escapeHTML(r.message)}</div>`
+                    : `<span class="badge bg-danger-lt text-danger fw-bold">失败</span><div class="small text-danger mt-1">${escapeHTML(r.message)}</div>`
                   }
                 </td>
                 <td><span class="badge bg-blue-lt">${r.count} 条</span></td>

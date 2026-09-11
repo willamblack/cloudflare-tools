@@ -5,7 +5,6 @@ import (
 	"cloudflare-tools/server/models"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"sync"
 
@@ -13,13 +12,13 @@ import (
 )
 
 type BatchCacheRequest struct {
-	AccountID      string   `json:"accountId"`
-	Domains        []string `json:"domains"`
-	PurgeCache     bool     `json:"purgeCache"`
-	CacheLevel     string   `json:"cacheLevel"`
-	BrowserTTL     string   `json:"browserTtl"`
-	AlwaysOnline   string   `json:"alwaysOnline"`
-	DevelopmentMode string  `json:"developmentMode"`
+	AccountID       string   `json:"accountId"`
+	Domains         []string `json:"domains"`
+	PurgeCache      bool     `json:"purgeCache"`
+	CacheLevel      string   `json:"cacheLevel"`
+	BrowserTTL      string   `json:"browserTtl"`
+	AlwaysOnline    string   `json:"alwaysOnline"`
+	DevelopmentMode string   `json:"developmentMode"`
 }
 
 type CacheResult struct {
@@ -34,16 +33,12 @@ func BatchCacheSettings(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
+	if !validateBatch(c, len(req.Domains)) {
+		return
 	}
 
-	if acc == nil {
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
@@ -55,6 +50,8 @@ func BatchCacheSettings(c *gin.Context) {
 		wg.Add(1)
 		go func(idx int, dom string) {
 			defer wg.Done()
+			acquireBatchSlot()
+			defer releaseBatchSlot()
 			success, msg := applyCacheSettings(acc, dom, &req)
 			results[idx] = CacheResult{
 				Domain:  dom,
@@ -69,31 +66,10 @@ func BatchCacheSettings(c *gin.Context) {
 }
 
 func applyCacheSettings(acc *models.Account, domain string, settings *BatchCacheRequest) (bool, string) {
-	reqGet, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones?name=%s", domain), nil)
-	reqGet.Header.Add("X-Auth-Email", acc.Email)
-	reqGet.Header.Add("X-Auth-Key", acc.Key)
-
-	client := &http.Client{}
-	resp, err := client.Do(reqGet)
+	zoneID, err := getZoneID(acc, domain)
 	if err != nil {
-		return false, "Request failed"
+		return false, err.Error()
 	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []struct {
-			ID string `json:"id"`
-		} `json:"result"`
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
-	if len(result.Result) == 0 {
-		return false, "Zone not found"
-	}
-
-	zoneID := result.Result[0].ID
 	successCount := 0
 	totalOperations := 0
 
@@ -153,7 +129,7 @@ func purgeAllCache(acc *models.Account, zoneID string) bool {
 	req.Header.Add("X-Auth-Key", acc.Key)
 	req.Header.Add("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := cloudflareClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return false

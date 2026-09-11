@@ -1,3 +1,5 @@
+import { escapeHTML } from '../utils.js';
+
 export class ExportZonesModule {
   static async render(container, state) {
     const res = await fetch('/api/accounts', { headers: { 'Authorization': state.token || localStorage.getItem('token') } });
@@ -24,7 +26,7 @@ export class ExportZonesModule {
               <div class="mb-3">
                 <label class="form-label fw-bold">选择 Cloudflare 账号</label>
                 <select id="export-account" class="form-select border-2 shadow-none">
-                  ${(accounts || []).map(a => `<option value="${a.id}">${a.name} (${a.email})</option>`).join('')}
+                  ${(accounts || []).map(a => `<option value="${escapeHTML(a.id)}">${escapeHTML(a.name)} (${escapeHTML(a.email)})</option>`).join('')}
                 </select>
               </div>
               <div class="form-footer mt-4">
@@ -103,16 +105,16 @@ export class ExportZonesModule {
           <tbody>
             ${data.map(z => `
               <tr class="bg-white">
-                <td><div class="fw-bold text-dark">${z.domain}</div></td>
+                <td><div class="fw-bold text-dark">${escapeHTML(z.domain)}</div></td>
                 <td>
                   ${z.status === 'active' 
                     ? '<span class="badge bg-success-lt text-success">Active</span>' 
-                    : `<span class="badge bg-warning-lt text-warning">${z.status}</span>`
+                    : `<span class="badge bg-warning-lt text-warning">${escapeHTML(z.status)}</span>`
                   }
                 </td>
                 <td>
                   ${z.nameServers && z.nameServers.length > 0 
-                    ? z.nameServers.map(ns => `<div class="small text-muted font-monospace">${ns}</div>`).join('') 
+                    ? z.nameServers.map(ns => `<div class="small text-muted font-monospace">${escapeHTML(ns)}</div>`).join('')
                     : '<span class="text-muted small">-</span>'
                   }
                 </td>

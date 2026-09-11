@@ -5,7 +5,6 @@ import (
 	"cloudflare-tools/server/models"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"sync"
 
@@ -13,20 +12,20 @@ import (
 )
 
 type BatchOptimizationRequest struct {
-	AccountID       string   `json:"accountId"`
-	Domains         []string `json:"domains"`
-	Minify          string   `json:"minify"`
-	Brotli          string   `json:"brotli"`
-	EarlyHints      string   `json:"earlyHints"`
-	HTTP2           string   `json:"http2"`
-	HTTP3           string   `json:"http3"`
-	ZeroRTT         string   `json:"zeroRtt"`
-	IPV6            string   `json:"ipv6"`
-	WebSockets      string   `json:"webSockets"`
-	PseudoIPV4      string   `json:"pseudoIpv4"`
-	RocketLoader    string   `json:"rocketLoader"`
-	Mirage          string   `json:"mirage"`
-	Polish          string   `json:"polish"`
+	AccountID    string   `json:"accountId"`
+	Domains      []string `json:"domains"`
+	Minify       string   `json:"minify"`
+	Brotli       string   `json:"brotli"`
+	EarlyHints   string   `json:"earlyHints"`
+	HTTP2        string   `json:"http2"`
+	HTTP3        string   `json:"http3"`
+	ZeroRTT      string   `json:"zeroRtt"`
+	IPV6         string   `json:"ipv6"`
+	WebSockets   string   `json:"webSockets"`
+	PseudoIPV4   string   `json:"pseudoIpv4"`
+	RocketLoader string   `json:"rocketLoader"`
+	Mirage       string   `json:"mirage"`
+	Polish       string   `json:"polish"`
 }
 
 type OptimizationResult struct {
@@ -41,16 +40,12 @@ func BatchOptimization(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
+	if !validateBatch(c, len(req.Domains)) {
+		return
 	}
 
-	if acc == nil {
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
@@ -62,6 +57,8 @@ func BatchOptimization(c *gin.Context) {
 		wg.Add(1)
 		go func(idx int, dom string) {
 			defer wg.Done()
+			acquireBatchSlot()
+			defer releaseBatchSlot()
 			success, msg := applyOptimization(acc, dom, &req)
 			results[idx] = OptimizationResult{
 				Domain:  dom,
@@ -76,31 +73,10 @@ func BatchOptimization(c *gin.Context) {
 }
 
 func applyOptimization(acc *models.Account, domain string, settings *BatchOptimizationRequest) (bool, string) {
-	reqGet, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones?name=%s", domain), nil)
-	reqGet.Header.Add("X-Auth-Email", acc.Email)
-	reqGet.Header.Add("X-Auth-Key", acc.Key)
-
-	client := &http.Client{}
-	resp, err := client.Do(reqGet)
+	zoneID, err := getZoneID(acc, domain)
 	if err != nil {
-		return false, "Request failed"
+		return false, err.Error()
 	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []struct {
-			ID string `json:"id"`
-		} `json:"result"`
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
-	if len(result.Result) == 0 {
-		return false, "Zone not found"
-	}
-
-	zoneID := result.Result[0].ID
 	successCount := 0
 	totalOperations := 0
 
@@ -199,7 +175,7 @@ func applyOptimization(acc *models.Account, domain string, settings *BatchOptimi
 
 func updateMinifySetting(acc *models.Account, zoneID string, minifyValue string) bool {
 	var minifyConfig map[string]interface{}
-	
+
 	switch minifyValue {
 	case "all":
 		minifyConfig = map[string]interface{}{
@@ -245,7 +221,7 @@ func updateMinifySetting(acc *models.Account, zoneID string, minifyValue string)
 	req.Header.Add("X-Auth-Key", acc.Key)
 	req.Header.Add("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := cloudflareClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return false

@@ -42,13 +42,13 @@
 
 #### 使用 GHCR 预构建镜像
 
-每次推送到 `main` 分支都会发布 `latest`，推送 Git 标签时会发布同名镜像标签；也可以在 GitHub Actions 中手动运行工作流并填写镜像版本。例如 `0.01` 版本：
+推送到 `main` 分支发布 `edge`，不会覆盖稳定版。推送稳定 Git 标签 `v0.01` 时会同时发布 `0.01`、`v0.01` 和 `latest`；也可以在 GitHub Actions 中手动填写版本，手动发布默认不更新 `latest`。
 
 ```bash
 docker pull ghcr.io/willamblack/cloudflare-tools:0.01
 ```
 
-准备配置和持久化目录：
+准备配置和持久化目录（`accounts.json` 和证书也会保存在这个目录）：
 
 ```bash
 mkdir -p data/certs
@@ -64,13 +64,17 @@ docker run -d \
   -p 28080:8080 \
   -e TZ=Asia/Shanghai \
   -e DATA_DIR=/data \
-  -v "$(pwd)/data/config.yaml:/data/config.yaml:ro" \
-  -v "$(pwd)/data/accounts.json:/data/accounts.json" \
-  -v "$(pwd)/data/certs:/data/certs" \
+  -e JWT_SECRET="$(openssl rand -hex 32)" \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --read-only \
+  --tmpfs /tmp:size=64m,mode=1777 \
+  -v "$(pwd)/data:/data" \
+  -v cloudflare-tools-acme:/root/.acme.sh \
   ghcr.io/willamblack/cloudflare-tools:0.01
 ```
 
-首次发布后，如需匿名 `docker pull`，请在 GitHub 包设置中将该 Container package 的可见性改为 Public。GitHub Actions 使用仓库自带的 `GITHUB_TOKEN` 发布，不需要额外创建 PAT。
+也可以不挂载配置文件，改用 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 环境变量。`JWT_SECRET` 至少 32 个字符；未设置时程序会随机生成，但重启会使已有登录失效。首次发布后，如需匿名 `docker pull`，请在 GitHub 包设置中将 Container package 可见性改为 Public。GitHub Actions 使用仓库自带的 `GITHUB_TOKEN` 发布，不需要额外创建 PAT。
 
 #### 本地构建
 
@@ -78,8 +82,9 @@ docker run -d \
 
 2. 配置管理员账号
 ```bash
-cp Server/config.yaml.example Server/config.yaml
-# 编辑 config.yaml 设置管理员用户名和密码
+mkdir -p data/certs
+cp Server/config.yaml.example data/config.yaml
+# 编辑 data/config.yaml 设置管理员用户名和密码
 ```
 
 3. 一键启动
@@ -94,9 +99,9 @@ chmod +x docker-start.sh
 
 #### 环境要求
 
-- Go 1.19+
-- Node.js 16+
-- npm 或 yarn
+- Go 1.25+
+- Node.js 20.19+
+- npm（使用仓库中的 `package-lock.json`）
 
 ### 安装步骤
 
@@ -109,7 +114,7 @@ cd cloudflare-tools
 2. 配置管理员账号
 ```bash
 cp Server/config.yaml.example Server/config.yaml
-# 编辑 config.yaml 设置管理员用户名和密码
+# 编辑 Server/config.yaml，必须替换 CHANGE_ME
 ```
 
 3. 安装 acme.sh（用于申请 SSL 证书）
@@ -144,6 +149,15 @@ admin:
   password: 'your-secure-password'
 ```
 
+启动时按顺序查找 `${DATA_DIR}/config.yaml`、`config/config.yaml`、`config.yaml`。以下环境变量可覆盖文件配置：
+
+- `ADMIN_USERNAME`：管理员用户名
+- `ADMIN_PASSWORD`：管理员密码；默认示例密码会被拒绝
+- `JWT_SECRET`：JWT HMAC 密钥，至少 32 字符
+- `DATA_DIR`：`config.yaml`、`accounts.json` 和 `certs/` 的持久化目录
+
+账号 API Key 保存在 `${DATA_DIR}/accounts.json`，程序以 `0600` 权限原子更新。请对 `data/` 做访问控制和备份。证书 ZIP 包含私钥，只能在登录后下载。
+
 ### CloudFlare API 密钥
 
 需要在 CloudFlare 控制台获取:
@@ -151,6 +165,27 @@ admin:
 2. 进入 "我的个人资料" > "API 令牌"
 3. 查看 "Global API Key"
 4. 在工具中添加邮箱和 API Key
+
+当前版本使用 Cloudflare Global API Key 兼容旧接口。该密钥权限很高，请使用专用 Cloudflare 账号、限制部署主机访问，并避免把 `data/accounts.json` 提交到 Git。
+
+### 发布镜像
+
+首次稳定发布：
+
+```bash
+git tag v0.01
+git push origin v0.01
+```
+
+工作流会在 `linux/amd64` 与 `linux/arm64` 上构建镜像，并先在 GitHub 托管的 Linux runner 中真实启动单架构镜像，验证健康检查、首页、登录、鉴权与账号 API。稳定标签才会更新 `latest`。
+
+### 健康检查
+
+```bash
+curl -fsS http://localhost:28080/healthz
+```
+
+成功时返回 `{"status":"ok"}`。
 
 ## 贡献
 

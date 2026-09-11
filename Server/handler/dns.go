@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -14,28 +15,28 @@ import (
 )
 
 type BatchParseDNSRequest struct {
-	AccountID  string   `json:"accountId"`
-	Records    []string `json:"records"`
-	TTL        int      `json:"ttl"`
-	Proxied    bool     `json:"proxied"`
-	DeleteOld  bool     `json:"deleteOld"`
-	OfflineMode bool    `json:"offlineMode"`
+	AccountID   string   `json:"accountId"`
+	Records     []string `json:"records"`
+	TTL         int      `json:"ttl"`
+	Proxied     bool     `json:"proxied"`
+	DeleteOld   bool     `json:"deleteOld"`
+	OfflineMode bool     `json:"offlineMode"`
 }
 
 type BatchDeleteDNSRequest struct {
-	AccountID string   `json:"accountId"`
-	Domains   []string `json:"domains"`
-	RecordType string  `json:"recordType"`
-	HostRecord string  `json:"hostRecord"`
-	DeleteAll  bool    `json:"deleteAll"`
-}
-
-type BatchProxyToggleRequest struct {
 	AccountID  string   `json:"accountId"`
 	Domains    []string `json:"domains"`
 	RecordType string   `json:"recordType"`
 	HostRecord string   `json:"hostRecord"`
-	ProxyStatus bool    `json:"proxyStatus"`
+	DeleteAll  bool     `json:"deleteAll"`
+}
+
+type BatchProxyToggleRequest struct {
+	AccountID   string   `json:"accountId"`
+	Domains     []string `json:"domains"`
+	RecordType  string   `json:"recordType"`
+	HostRecord  string   `json:"hostRecord"`
+	ProxyStatus bool     `json:"proxyStatus"`
 }
 
 type DNSRecord struct {
@@ -47,11 +48,11 @@ type DNSRecord struct {
 }
 
 type DNSResult struct {
-	Domain string `json:"domain"`
-	Host   string `json:"host"`
-	Type   string `json:"type"`
-	Value  string `json:"value"`
-	Success bool  `json:"success"`
+	Domain  string `json:"domain"`
+	Host    string `json:"host"`
+	Type    string `json:"type"`
+	Value   string `json:"value"`
+	Success bool   `json:"success"`
 	Message string `json:"message"`
 }
 
@@ -69,29 +70,50 @@ type ProxyToggleResult struct {
 	Count   int    `json:"count"`
 }
 
+type cloudflareDNSRecord struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Proxied bool   `json:"proxied"`
+}
+
+type cloudflareDNSListResponse struct {
+	Result     []cloudflareDNSRecord `json:"result"`
+	ResultInfo struct {
+		Page       int `json:"page"`
+		TotalPages int `json:"total_pages"`
+	} `json:"result_info"`
+}
+
 func BatchParseDNS(c *gin.Context) {
 	var req BatchParseDNSRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
-	}
-
-	if acc == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
+	if !validateBatch(c, len(req.Records)) {
 		return
 	}
 
 	records := parseRecords(req.Records)
 	if len(records) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No valid records"})
+		return
+	}
+	if req.OfflineMode {
+		results := make([]DNSResult, len(records))
+		for i, rec := range records {
+			results[i] = DNSResult{
+				Domain: rec.Domain, Host: rec.Host, Type: rec.Type, Value: rec.Value,
+				Success: true, Message: "离线检查通过，未向 Cloudflare 写入任何记录",
+			}
+		}
+		c.JSON(http.StatusOK, results)
+		return
+	}
+
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
 
@@ -102,6 +124,8 @@ func BatchParseDNS(c *gin.Context) {
 		wg.Add(1)
 		go func(idx int, rec DNSRecord) {
 			defer wg.Done()
+			acquireBatchSlot()
+			defer releaseBatchSlot()
 			success, msg := addDNSRecord(acc, rec, req.TTL, req.Proxied, req.DeleteOld)
 			results[idx] = DNSResult{
 				Domain:  rec.Domain,
@@ -153,7 +177,9 @@ func addDNSRecord(acc *models.Account, record DNSRecord, ttl int, proxied bool, 
 	}
 
 	if deleteOld {
-		deleteExistingRecords(acc, zoneID, record.Host, record.Type)
+		if err := deleteExistingRecords(acc, zoneID, record.Host, record.Type); err != nil {
+			return false, "Delete old records failed: " + err.Error()
+		}
 	}
 
 	if ttl == 0 {
@@ -180,7 +206,7 @@ func addDNSRecord(acc *models.Account, record DNSRecord, ttl int, proxied bool, 
 	req.Header.Add("X-Auth-Key", acc.Key)
 	req.Header.Add("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := cloudflareClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, "Request failed"
@@ -210,11 +236,11 @@ func addDNSRecord(acc *models.Account, record DNSRecord, ttl int, proxied bool, 
 }
 
 func getZoneID(acc *models.Account, domain string) (string, error) {
-	req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones?name=%s", domain), nil)
+	req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones?name=%s", url.QueryEscape(domain)), nil)
 	req.Header.Add("X-Auth-Email", acc.Email)
 	req.Header.Add("X-Auth-Key", acc.Key)
 
-	client := &http.Client{}
+	client := cloudflareClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("Request failed")
@@ -228,7 +254,12 @@ func getZoneID(acc *models.Account, domain string) (string, error) {
 	}
 
 	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Cloudflare returned HTTP %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("Invalid Cloudflare response")
+	}
 
 	if len(result.Result) == 0 {
 		return "", fmt.Errorf("Zone not found")
@@ -237,33 +268,17 @@ func getZoneID(acc *models.Account, domain string) (string, error) {
 	return result.Result[0].ID, nil
 }
 
-func deleteExistingRecords(acc *models.Account, zoneID string, name string, recordType string) {
-	req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records?name=%s&type=%s", zoneID, name, recordType), nil)
-	req.Header.Add("X-Auth-Email", acc.Email)
-	req.Header.Add("X-Auth-Key", acc.Key)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
+func deleteExistingRecords(acc *models.Account, zoneID string, name string, recordType string) error {
+	records, err := listDNSRecords(acc, zoneID, recordType, name)
 	if err != nil {
-		return
+		return err
 	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []struct {
-			ID string `json:"id"`
-		} `json:"result"`
+	for _, record := range records {
+		if err := deleteCloudflareDNSRecord(acc, zoneID, record.ID); err != nil {
+			return err
+		}
 	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
-	for _, record := range result.Result {
-		delReq, _ := http.NewRequest("DELETE", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneID, record.ID), nil)
-		delReq.Header.Add("X-Auth-Email", acc.Email)
-		delReq.Header.Add("X-Auth-Key", acc.Key)
-		client.Do(delReq)
-	}
+	return nil
 }
 
 func BatchDeleteDNS(c *gin.Context) {
@@ -272,16 +287,12 @@ func BatchDeleteDNS(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
+	if !validateBatch(c, len(req.Domains)) {
+		return
 	}
 
-	if acc == nil {
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
@@ -298,6 +309,8 @@ func BatchDeleteDNS(c *gin.Context) {
 		wg.Add(1)
 		go func(idx int, dom string) {
 			defer wg.Done()
+			acquireBatchSlot()
+			defer releaseBatchSlot()
 			success, msg, count := deleteDNSRecords(acc, dom, req.RecordType, req.HostRecord, req.DeleteAll)
 			results[idx] = DeleteResult{
 				Domain:  dom,
@@ -318,58 +331,21 @@ func deleteDNSRecords(acc *models.Account, domain string, recordType string, hos
 		return false, err.Error(), 0
 	}
 
-	var url string
 	if deleteAll {
-		url = fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records", zoneID)
-	} else {
-		url = fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records", zoneID)
-		if recordType != "" {
-			url += "?type=" + recordType
-		}
-		if hostRecord != "" {
-			if recordType != "" {
-				url += "&name=" + hostRecord
-			} else {
-				url += "?name=" + hostRecord
-			}
-		}
+		recordType, hostRecord = "", ""
 	}
-
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Add("X-Auth-Email", acc.Email)
-	req.Header.Add("X-Auth-Key", acc.Key)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	records, err := listDNSRecords(acc, zoneID, recordType, hostRecord)
 	if err != nil {
-		return false, "Request failed", 0
+		return false, err.Error(), 0
 	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []struct {
-			ID string `json:"id"`
-		} `json:"result"`
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
-	if len(result.Result) == 0 {
+	if len(records) == 0 {
 		return false, "No records found", 0
 	}
 
 	count := 0
-	for _, record := range result.Result {
-		delReq, _ := http.NewRequest("DELETE", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneID, record.ID), nil)
-		delReq.Header.Add("X-Auth-Email", acc.Email)
-		delReq.Header.Add("X-Auth-Key", acc.Key)
-		delResp, err := client.Do(delReq)
-		if err == nil && delResp.StatusCode == http.StatusOK {
+	for _, record := range records {
+		if err := deleteCloudflareDNSRecord(acc, zoneID, record.ID); err == nil {
 			count++
-		}
-		if delResp != nil {
-			delResp.Body.Close()
 		}
 	}
 
@@ -385,16 +361,12 @@ func BatchProxyToggle(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
+	if !validateBatch(c, len(req.Domains)) {
+		return
 	}
 
-	if acc == nil {
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
@@ -411,6 +383,8 @@ func BatchProxyToggle(c *gin.Context) {
 		wg.Add(1)
 		go func(idx int, dom string) {
 			defer wg.Done()
+			acquireBatchSlot()
+			defer releaseBatchSlot()
 			success, msg, count := toggleProxyStatus(acc, dom, req.RecordType, req.HostRecord, req.ProxyStatus)
 			results[idx] = ProxyToggleResult{
 				Domain:  dom,
@@ -431,46 +405,16 @@ func toggleProxyStatus(acc *models.Account, domain string, recordType string, ho
 		return false, err.Error(), 0
 	}
 
-	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records", zoneID)
-	params := []string{}
-	if recordType != "" {
-		params = append(params, "type="+recordType)
-	}
-	if hostRecord != "" {
-		params = append(params, "name="+hostRecord)
-	}
-	if len(params) > 0 {
-		url += "?" + strings.Join(params, "&")
-	}
-
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Add("X-Auth-Email", acc.Email)
-	req.Header.Add("X-Auth-Key", acc.Key)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	records, err := listDNSRecords(acc, zoneID, recordType, hostRecord)
 	if err != nil {
-		return false, "Request failed", 0
+		return false, err.Error(), 0
 	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []struct {
-			ID      string `json:"id"`
-			Type    string `json:"type"`
-			Proxied bool   `json:"proxied"`
-		} `json:"result"`
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
-	if len(result.Result) == 0 {
+	if len(records) == 0 {
 		return false, "No records found", 0
 	}
 
 	count := 0
-	for _, record := range result.Result {
+	for _, record := range records {
 		if record.Type == "A" || record.Type == "AAAA" || record.Type == "CNAME" {
 			payload := map[string]interface{}{
 				"proxied": proxyStatus,
@@ -482,7 +426,7 @@ func toggleProxyStatus(acc *models.Account, domain string, recordType string, ho
 			patchReq.Header.Add("X-Auth-Key", acc.Key)
 			patchReq.Header.Add("Content-Type", "application/json")
 
-			patchResp, err := client.Do(patchReq)
+			patchResp, err := cloudflareClient.Do(patchReq)
 			if err == nil && patchResp.StatusCode == http.StatusOK {
 				count++
 			}
@@ -500,4 +444,53 @@ func toggleProxyStatus(acc *models.Account, domain string, recordType string, ho
 		return true, fmt.Sprintf("%s代理 %d 条记录", status, count), count
 	}
 	return false, "No proxiable records found", 0
+}
+
+func listDNSRecords(acc *models.Account, zoneID, recordType, name string) ([]cloudflareDNSRecord, error) {
+	var records []cloudflareDNSRecord
+	for page := 1; ; page++ {
+		params := url.Values{"page": {fmt.Sprint(page)}, "per_page": {"100"}}
+		if recordType != "" {
+			params.Set("type", recordType)
+		}
+		if name != "" {
+			params.Set("name", name)
+		}
+		endpoint := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records?%s", zoneID, params.Encode())
+		req, _ := http.NewRequest("GET", endpoint, nil)
+		req.Header.Add("X-Auth-Email", acc.Email)
+		req.Header.Add("X-Auth-Key", acc.Key)
+		resp, err := cloudflareClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("request failed")
+		}
+		var result cloudflareDNSListResponse
+		decodeErr := json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("Cloudflare returned HTTP %d", resp.StatusCode)
+		}
+		if decodeErr != nil {
+			return nil, fmt.Errorf("invalid Cloudflare response")
+		}
+		records = append(records, result.Result...)
+		if len(result.Result) < 100 || (result.ResultInfo.TotalPages > 0 && page >= result.ResultInfo.TotalPages) {
+			return records, nil
+		}
+	}
+}
+
+func deleteCloudflareDNSRecord(acc *models.Account, zoneID, recordID string) error {
+	req, _ := http.NewRequest("DELETE", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneID, recordID), nil)
+	req.Header.Add("X-Auth-Email", acc.Email)
+	req.Header.Add("X-Auth-Key", acc.Key)
+	resp, err := cloudflareClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Cloudflare returned HTTP %d", resp.StatusCode)
+	}
+	return nil
 }

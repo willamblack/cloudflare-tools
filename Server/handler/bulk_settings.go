@@ -2,9 +2,7 @@ package handler
 
 import (
 	"cloudflare-tools/server/models"
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"sync"
 
@@ -12,24 +10,24 @@ import (
 )
 
 type BatchBulkSettingsRequest struct {
-	AccountID           string   `json:"accountId"`
-	Domains             []string `json:"domains"`
-	SecurityLevel       string   `json:"securityLevel"`
-	ChallengePassage    string   `json:"challengePassage"`
-	BrowserIntegrity    string   `json:"browserIntegrity"`
-	HotlinkProtection   string   `json:"hotlinkProtection"`
-	EmailObfuscation    string   `json:"emailObfuscation"`
-	ServerSideExcludes  string   `json:"serverSideExcludes"`
-	WAF                 string   `json:"waf"`
-	PrivacyPass         string   `json:"privacyPass"`
-	AutomaticPlatform   string   `json:"automaticPlatform"`
-	OrangeToOrange      string   `json:"orangeToOrange"`
-	ProxyReadTimeout    string   `json:"proxyReadTimeout"`
-	PrefetchPreload     string   `json:"prefetchPreload"`
-	ResponseBuffering   string   `json:"responseBuffering"`
-	SortQueryString     string   `json:"sortQueryString"`
-	TrueClientIP        string   `json:"trueClientIp"`
-	CrawlerHints        string   `json:"crawlerHints"`
+	AccountID          string   `json:"accountId"`
+	Domains            []string `json:"domains"`
+	SecurityLevel      string   `json:"securityLevel"`
+	ChallengePassage   string   `json:"challengePassage"`
+	BrowserIntegrity   string   `json:"browserIntegrity"`
+	HotlinkProtection  string   `json:"hotlinkProtection"`
+	EmailObfuscation   string   `json:"emailObfuscation"`
+	ServerSideExcludes string   `json:"serverSideExcludes"`
+	WAF                string   `json:"waf"`
+	PrivacyPass        string   `json:"privacyPass"`
+	AutomaticPlatform  string   `json:"automaticPlatform"`
+	OrangeToOrange     string   `json:"orangeToOrange"`
+	ProxyReadTimeout   string   `json:"proxyReadTimeout"`
+	PrefetchPreload    string   `json:"prefetchPreload"`
+	ResponseBuffering  string   `json:"responseBuffering"`
+	SortQueryString    string   `json:"sortQueryString"`
+	TrueClientIP       string   `json:"trueClientIp"`
+	CrawlerHints       string   `json:"crawlerHints"`
 }
 
 type BulkSettingsResult struct {
@@ -44,16 +42,12 @@ func BatchBulkSettings(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
+	if !validateBatch(c, len(req.Domains)) {
+		return
 	}
 
-	if acc == nil {
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
@@ -65,6 +59,8 @@ func BatchBulkSettings(c *gin.Context) {
 		wg.Add(1)
 		go func(idx int, dom string) {
 			defer wg.Done()
+			acquireBatchSlot()
+			defer releaseBatchSlot()
 			success, msg := applyBulkSettings(acc, dom, &req)
 			results[idx] = BulkSettingsResult{
 				Domain:  dom,
@@ -79,31 +75,10 @@ func BatchBulkSettings(c *gin.Context) {
 }
 
 func applyBulkSettings(acc *models.Account, domain string, settings *BatchBulkSettingsRequest) (bool, string) {
-	reqGet, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones?name=%s", domain), nil)
-	reqGet.Header.Add("X-Auth-Email", acc.Email)
-	reqGet.Header.Add("X-Auth-Key", acc.Key)
-
-	client := &http.Client{}
-	resp, err := client.Do(reqGet)
+	zoneID, err := getZoneID(acc, domain)
 	if err != nil {
-		return false, "Request failed"
+		return false, err.Error()
 	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []struct {
-			ID string `json:"id"`
-		} `json:"result"`
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
-	if len(result.Result) == 0 {
-		return false, "Zone not found"
-	}
-
-	zoneID := result.Result[0].ID
 	successCount := 0
 	totalOperations := 0
 

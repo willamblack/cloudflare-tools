@@ -1,3 +1,5 @@
+import { escapeHTML } from '../utils.js';
+
 export class ApplyCertModule {
   static async render(container, state) {
     const res = await fetch('/api/accounts', { headers: { 'Authorization': state.token || localStorage.getItem('token') } });
@@ -27,7 +29,7 @@ export class ApplyCertModule {
               <div class="mb-3">
                 <label class="form-label fw-bold">选择 Cloudflare 账号</label>
                 <select id="cert-account" class="form-select border-2 shadow-none">
-                  ${(accounts || []).map(a => `<option value="${a.id}">${a.name} (${a.email})</option>`).join('')}
+                  ${(accounts || []).map(a => `<option value="${escapeHTML(a.id)}">${escapeHTML(a.name)} (${escapeHTML(a.email)})</option>`).join('')}
                 </select>
               </div>
               <div class="mb-3">
@@ -90,11 +92,11 @@ export class ApplyCertModule {
                   <tbody>
                     ${existingCerts.map(cert => `
                       <tr class="bg-white">
-                        <td><div class="fw-bold text-dark">${cert.domain}</div></td>
-                        <td class="text-muted small">${cert.modifiedAt}</td>
+                        <td><div class="fw-bold text-dark">${escapeHTML(cert.domain)}</div></td>
+                        <td class="text-muted small">${escapeHTML(cert.modifiedAt)}</td>
                         <td class="text-muted small">${(cert.size / 1024).toFixed(2)} KB</td>
                         <td>
-                          <a href="${cert.downloadUrl}" class="btn btn-sm btn-primary" download>
+                          <a href="${escapeHTML(cert.downloadUrl)}" class="btn btn-sm btn-primary" download>
                             <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-sm" width="18" height="18" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2" /><path d="M7 11l5 5l5 -5" /><path d="M12 4l0 12" /></svg>
                             下载
                           </a>
@@ -137,7 +139,7 @@ export class ApplyCertModule {
           <tr><th>域名</th><th>状态</th><th>操作</th></tr>
         </thead>
         <tbody>
-          ${domains.map(d => `<tr><td>${d}${includeWildcard ? ' + *.' + d : ''}</td><td><span class="badge bg-secondary-lt text-dark">队列中</span></td><td>-</td></tr>`).join('')}
+          ${domains.map(d => `<tr><td>${escapeHTML(d)}${includeWildcard ? ' + *.' + escapeHTML(d) : ''}</td><td><span class="badge bg-secondary-lt text-dark">队列中</span></td><td>-</td></tr>`).join('')}
         </tbody>
       </table>
     `;
@@ -166,13 +168,13 @@ export class ApplyCertModule {
           <tbody>
             ${data.map(r => `
               <tr class="bg-white">
-                <td><div class="fw-bold text-dark">${r.domain}${includeWildcard ? ' + *.' + r.domain : ''}</div></td>
+                <td><div class="fw-bold text-dark">${escapeHTML(r.domain)}${includeWildcard ? ' + *.' + escapeHTML(r.domain) : ''}</div></td>
                 <td>
                   ${r.success 
                     ? `<span class="badge bg-success-lt text-success fw-bold">✓ 成功</span>` 
                     : `<span class="badge bg-danger-lt text-danger fw-bold">✗ 失败</span>`
                   }
-                  <div class="small text-muted mt-1">${r.message}</div>
+                  <div class="small text-muted mt-1">${escapeHTML(r.message)}</div>
                 </td>
                 <td>
                   <div class="small" style="max-height: 150px; overflow-y: auto;">
@@ -184,13 +186,13 @@ export class ApplyCertModule {
                       if (isError) color = 'text-danger';
                       if (isSuccess) color = 'text-success';
                       if (isProgress) color = 'text-info';
-                      return `<div class="${color}">${step}</div>`;
+                      return `<div class="${color}">${escapeHTML(step)}</div>`;
                     }).join('')}
                   </div>
                 </td>
                 <td>
                   ${r.success && r.downloadUrl 
-                    ? `<a href="${r.downloadUrl}" class="btn btn-sm btn-primary" download>
+                    ? `<a href="${escapeHTML(r.downloadUrl)}" class="btn btn-sm btn-primary" download>
                         <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-sm" width="18" height="18" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2" /><path d="M7 11l5 5l5 -5" /><path d="M12 4l0 12" /></svg>
                         下载
                       </a>` 

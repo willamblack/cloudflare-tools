@@ -6,12 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test": "node --test",
     "preview": "vite preview"
   },
   "devDependencies": {
-    "vite": "^7.2.4"
-  },
-  "dependencies": {
-    "@tabler/core": "^1.4.0"
+    "@tabler/core": "1.5.1",
+    "vite": "7.3.6"
   }
 }

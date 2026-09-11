@@ -2,33 +2,35 @@ package handler
 
 import (
 	"archive/zip"
+	"cloudflare-tools/server/config"
 	"cloudflare-tools/server/models"
+	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
 type BatchApplyCertRequest struct {
-	AccountID      string   `json:"accountId"`
-	Domains        []string `json:"domains"`
-	IncludeWildcard bool    `json:"includeWildcard"`
+	AccountID       string   `json:"accountId"`
+	Domains         []string `json:"domains"`
+	IncludeWildcard bool     `json:"includeWildcard"`
 }
 
 type CertResult struct {
-	Domain       string   `json:"domain"`
-	Success      bool     `json:"success"`
-	Message      string   `json:"message"`
-	Steps        []string `json:"steps"`
-	CertPath     string   `json:"certPath,omitempty"`
-	DownloadURL  string   `json:"downloadUrl,omitempty"`
+	Domain      string   `json:"domain"`
+	Success     bool     `json:"success"`
+	Message     string   `json:"message"`
+	Steps       []string `json:"steps"`
+	CertPath    string   `json:"certPath,omitempty"`
+	DownloadURL string   `json:"downloadUrl,omitempty"`
 }
 
 func BatchApplyCert(c *gin.Context) {
@@ -37,16 +39,12 @@ func BatchApplyCert(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
+	if !validateBatch(c, len(req.Domains)) {
+		return
 	}
 
-	if acc == nil {
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
@@ -58,6 +56,8 @@ func BatchApplyCert(c *gin.Context) {
 		wg.Add(1)
 		go func(idx int, dom string) {
 			defer wg.Done()
+			acquireBatchSlot()
+			defer releaseBatchSlot()
 			success, msg, steps, certPath := applyCertificate(acc, dom, req.IncludeWildcard)
 			downloadURL := ""
 			if success && certPath != "" {
@@ -80,16 +80,22 @@ func BatchApplyCert(c *gin.Context) {
 
 func applyCertificate(acc *models.Account, domain string, includeWildcard bool) (bool, string, []string, string) {
 	steps := []string{}
-	
-	acmeShPath := os.Getenv("HOME") + "/.acme.sh/acme.sh"
+	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	if !validDomain(domain) {
+		return false, "域名格式无效", []string{"✗ 域名格式无效"}, ""
+	}
+
+	acmeShPath := filepath.Join(os.Getenv("HOME"), ".acme.sh", "acme.sh")
 	if _, err := os.Stat(acmeShPath); os.IsNotExist(err) {
 		steps = append(steps, "错误: acme.sh 未安装")
 		return false, "acme.sh not installed", steps, ""
 	}
 	steps = append(steps, "✓ 检查 acme.sh 环境")
 
-	certDir := filepath.Join("certs", domain)
-	os.MkdirAll(certDir, 0755)
+	certDir := filepath.Join(config.DataPath("certs"), domain)
+	if err := os.MkdirAll(certDir, 0700); err != nil {
+		return false, "无法创建证书目录", append(steps, "✗ 创建证书目录失败"), ""
+	}
 	steps = append(steps, "✓ 创建证书目录")
 
 	domainArgs := []string{"-d", domain}
@@ -100,9 +106,13 @@ func applyCertificate(acc *models.Account, domain string, includeWildcard bool) 
 	}
 	steps = append(steps, fmt.Sprintf("✓ 准备申请域名: %s", domainList))
 
-	cmd := exec.Command(acmeShPath, append([]string{
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, acmeShPath, append([]string{
 		"--issue",
 		"--dns", "dns_cf",
+		"--server", "letsencrypt",
+		"--accountemail", acc.Email,
 	}, domainArgs...)...)
 
 	cmd.Env = append(os.Environ(),
@@ -119,7 +129,7 @@ func applyCertificate(acc *models.Account, domain string, includeWildcard bool) 
 			return installExistingCert(acmeShPath, domain, certDir, includeWildcard, steps)
 		}
 		steps = append(steps, "✗ 申请失败")
-		steps = append(steps, fmt.Sprintf("错误详情: %s", errMsg))
+		steps = append(steps, fmt.Sprintf("错误详情: %s", truncateMessage(errMsg, 2000)))
 		return false, "申请失败", steps, ""
 	}
 
@@ -134,7 +144,9 @@ func installExistingCert(acmeShPath, domain, certDir string, includeWildcard boo
 	}
 
 	steps = append(steps, "→ 安装证书文件...")
-	installCmd := exec.Command(acmeShPath, append([]string{
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	installCmd := exec.CommandContext(ctx, acmeShPath, append([]string{
 		"--install-cert",
 	}, append(domainArgs,
 		"--cert-file", filepath.Join(certDir, "cert.pem"),
@@ -145,13 +157,13 @@ func installExistingCert(acmeShPath, domain, certDir string, includeWildcard boo
 
 	if output, err := installCmd.CombinedOutput(); err != nil {
 		steps = append(steps, "✗ 证书安装失败")
-		steps = append(steps, fmt.Sprintf("错误详情: %s", string(output)))
+		steps = append(steps, fmt.Sprintf("错误详情: %s", truncateMessage(string(output), 2000)))
 		return false, "安装失败", steps, ""
 	}
 
 	steps = append(steps, "✓ 证书文件安装完成")
 	steps = append(steps, "→ 打包证书为 ZIP...")
-	
+
 	zipPath := certDir + ".zip"
 	if err := zipCertFiles(certDir, zipPath); err != nil {
 		steps = append(steps, "✗ ZIP 打包失败")
@@ -164,14 +176,11 @@ func installExistingCert(acmeShPath, domain, certDir string, includeWildcard boo
 }
 
 func zipCertFiles(sourceDir, zipPath string) error {
-	zipFile, err := os.Create(zipPath)
+	zipFile, err := os.OpenFile(zipPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
-	defer zipFile.Close()
-
 	archive := zip.NewWriter(zipFile)
-	defer archive.Close()
 
 	files := []string{"cert.pem", "key.pem", "fullchain.pem", "ca.pem"}
 	for _, file := range files {
@@ -182,31 +191,46 @@ func zipCertFiles(sourceDir, zipPath string) error {
 
 		f, err := os.Open(filePath)
 		if err != nil {
-			continue
+			archive.Close()
+			zipFile.Close()
+			return err
 		}
-		defer f.Close()
 
 		w, err := archive.Create(file)
 		if err != nil {
-			continue
+			f.Close()
+			archive.Close()
+			zipFile.Close()
+			return err
 		}
 
 		if _, err := io.Copy(w, f); err != nil {
-			continue
+			f.Close()
+			archive.Close()
+			zipFile.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			archive.Close()
+			zipFile.Close()
+			return err
 		}
 	}
-
-	return nil
+	if err := archive.Close(); err != nil {
+		zipFile.Close()
+		return err
+	}
+	return zipFile.Close()
 }
 
 func DownloadCert(c *gin.Context) {
 	filename := c.Param("filename")
-	if filename == "" || strings.Contains(filename, "..") {
+	if filename == "" || filepath.Base(filename) != filename || !strings.HasSuffix(filename, ".zip") {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid filename"})
 		return
 	}
 
-	filePath := filepath.Join("certs", filename)
+	filePath := filepath.Join(config.DataPath("certs"), filename)
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
 		return
@@ -220,13 +244,13 @@ func DownloadCert(c *gin.Context) {
 }
 
 func ListCerts(c *gin.Context) {
-	certsDir := "certs"
+	certsDir := config.DataPath("certs")
 	if _, err := os.Stat(certsDir); os.IsNotExist(err) {
 		c.JSON(http.StatusOK, []gin.H{})
 		return
 	}
 
-	files, err := ioutil.ReadDir(certsDir)
+	files, err := os.ReadDir(certsDir)
 	if err != nil {
 		c.JSON(http.StatusOK, []gin.H{})
 		return
@@ -234,13 +258,13 @@ func ListCerts(c *gin.Context) {
 
 	var certs []gin.H
 	for _, file := range files {
-		if strings.HasSuffix(file.Name(), ".zip") {
+		if info, statErr := file.Info(); statErr == nil && strings.HasSuffix(file.Name(), ".zip") {
 			domain := strings.TrimSuffix(file.Name(), ".zip")
 			certs = append(certs, gin.H{
 				"domain":      domain,
 				"filename":    file.Name(),
-				"size":        file.Size(),
-				"modifiedAt":  file.ModTime().Format("2006-01-02 15:04:05"),
+				"size":        info.Size(),
+				"modifiedAt":  info.ModTime().Format("2006-01-02 15:04:05"),
 				"downloadUrl": fmt.Sprintf("/api/certs/download/%s", file.Name()),
 			})
 		}
@@ -251,4 +275,12 @@ func ListCerts(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, certs)
+}
+
+func truncateMessage(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "…"
 }

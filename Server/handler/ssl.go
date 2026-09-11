@@ -5,7 +5,6 @@ import (
 	"cloudflare-tools/server/models"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"sync"
 
@@ -13,13 +12,13 @@ import (
 )
 
 type BatchSSLSettingsRequest struct {
-	AccountID         string   `json:"accountId"`
-	Domains           []string `json:"domains"`
-	SSLMode           string   `json:"sslMode"`
-	MinTLSVersion     string   `json:"minTlsVersion"`
-	AlwaysUseHTTPS    string   `json:"alwaysUseHttps"`
-	AutomaticHTTPS    string   `json:"automaticHttps"`
-	OpportunisticEnc  string   `json:"opportunisticEnc"`
+	AccountID        string   `json:"accountId"`
+	Domains          []string `json:"domains"`
+	SSLMode          string   `json:"sslMode"`
+	MinTLSVersion    string   `json:"minTlsVersion"`
+	AlwaysUseHTTPS   string   `json:"alwaysUseHttps"`
+	AutomaticHTTPS   string   `json:"automaticHttps"`
+	OpportunisticEnc string   `json:"opportunisticEnc"`
 }
 
 type SSLSettingResult struct {
@@ -34,16 +33,12 @@ func BatchSSLSettings(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
+	if !validateBatch(c, len(req.Domains)) {
+		return
 	}
 
-	if acc == nil {
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
@@ -55,6 +50,8 @@ func BatchSSLSettings(c *gin.Context) {
 		wg.Add(1)
 		go func(idx int, dom string) {
 			defer wg.Done()
+			acquireBatchSlot()
+			defer releaseBatchSlot()
 			success, msg := applySSLSettings(acc, dom, &req)
 			results[idx] = SSLSettingResult{
 				Domain:  dom,
@@ -69,31 +66,10 @@ func BatchSSLSettings(c *gin.Context) {
 }
 
 func applySSLSettings(acc *models.Account, domain string, settings *BatchSSLSettingsRequest) (bool, string) {
-	reqGet, _ := http.NewRequest("GET", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones?name=%s", domain), nil)
-	reqGet.Header.Add("X-Auth-Email", acc.Email)
-	reqGet.Header.Add("X-Auth-Key", acc.Key)
-
-	client := &http.Client{}
-	resp, err := client.Do(reqGet)
+	zoneID, err := getZoneID(acc, domain)
 	if err != nil {
-		return false, "Request failed"
+		return false, err.Error()
 	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Result []struct {
-			ID string `json:"id"`
-		} `json:"result"`
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
-
-	if len(result.Result) == 0 {
-		return false, "Zone not found"
-	}
-
-	zoneID := result.Result[0].ID
 	successCount := 0
 	totalSettings := 0
 
@@ -152,7 +128,7 @@ func updateZoneSetting(acc *models.Account, zoneID string, setting string, value
 	req.Header.Add("X-Auth-Key", acc.Key)
 	req.Header.Add("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := cloudflareClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return false

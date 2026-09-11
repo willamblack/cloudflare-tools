@@ -30,16 +30,12 @@ func BatchEmailRouting(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
+	if !validateBatch(c, len(req.Domains)) {
+		return
 	}
 
-	if acc == nil {
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
@@ -51,6 +47,8 @@ func BatchEmailRouting(c *gin.Context) {
 		wg.Add(1)
 		go func(idx int, dom string) {
 			defer wg.Done()
+			acquireBatchSlot()
+			defer releaseBatchSlot()
 			success, msg := processEmailRouting(acc, dom, req.Worker)
 			results[idx] = EmailRoutingResult{
 				Domain:  dom,
@@ -88,7 +86,7 @@ func enableEmailRouting(acc *models.Account, zoneID string) (bool, string) {
 	req.Header.Add("X-Auth-Key", acc.Key)
 	req.Header.Add("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := cloudflareClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, "Request failed"
@@ -124,7 +122,7 @@ func setCatchAllRule(acc *models.Account, zoneID string, workerName string) (boo
 	req.Header.Add("X-Auth-Key", acc.Key)
 	req.Header.Add("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := cloudflareClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, "Request failed"
@@ -150,14 +148,11 @@ func BatchDeleteEmailRouting(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-	var acc *models.Account
-	for _, a := range models.Accounts {
-		if a.ID == req.AccountID {
-			acc = &a
-			break
-		}
+	if !validateBatch(c, len(req.Domains)) {
+		return
 	}
-	if acc == nil {
+	acc, ok := findAccount(req.AccountID)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
@@ -167,6 +162,8 @@ func BatchDeleteEmailRouting(c *gin.Context) {
 		wg.Add(1)
 		go func(idx int, dom string) {
 			defer wg.Done()
+			acquireBatchSlot()
+			defer releaseBatchSlot()
 			success, msg := processDeleteEmailRouting(acc, dom)
 			results[idx] = EmailRoutingResult{
 				Domain:  dom,
@@ -196,7 +193,7 @@ func disableEmailRouting(acc *models.Account, zone_id string) (bool, string) {
 	req.Header.Add("X-Auth-Email", acc.Email)
 	req.Header.Add("X-Auth-Key", acc.Key)
 	req.Header.Add("Content-Type", "application/json")
-	client := &http.Client{}
+	client := cloudflareClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, "Request failed"
@@ -208,4 +205,3 @@ func disableEmailRouting(acc *models.Account, zone_id string) (bool, string) {
 	resp_body, _ := ioutil.ReadAll(resp.Body)
 	return false, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(resp_body))
 }
-

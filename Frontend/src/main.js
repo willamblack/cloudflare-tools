@@ -31,15 +31,8 @@ window.handleAuthError = function (response) {
 };
 
 // Global Error Handler for debugging "Empty Page" issues
-window.onerror = function (msg, url, line, col, error) {
-  document.body.innerHTML += `
-    <div style="position:fixed;top:0;left:0;width:100%;background:red;color:white;padding:20px;z-index:9999;">
-      <h3>Frontend Error</h3>
-      <p>${msg}</p>
-      <p>@ ${url}:${line}:${col}</p>
-      <pre>${error?.stack}</pre>
-    </div>
-  `;
+window.onerror = function (msg, url, line, col) {
+  console.error('Frontend error:', msg, url, line, col);
 };
 
 const state = {
@@ -65,8 +58,8 @@ const menuGroups = [
     items: [
       { id: 'ssl-settings', name: 'SSL/HTTPS', full: 'CloudFlare HTTPS边缘证书批量设置', desc: '设置网址的HTTPS加密模式, TLS版本, 自动重定向到HTTPS等' },
       { id: 'apply-cert', name: '证书申请', full: '一键申请免费SSL证书', desc: '使用 Let\'s Encrypt 申请免费SSL证书，支持通配符域名' },
-      { id: 'copy-rules', name: '规则复制', full: 'CloudFlare 批量复制规则,WAF规则', desc: 'Configuration Rules, 转换规则, 重写URL, 修改请求头, 响应头, WAF自定义规则等' },
-      { id: 'del-rules', name: '规则清除', full: 'CloudFlare 批量删除页面规则', desc: '批量清空各种规则, 转换规则, 重写URL, 修改请求/响应头, WAF自定义规则等' }
+      { id: 'copy-rules', name: '规则复制', full: 'CloudFlare 批量复制旧版规则', desc: '复制页面规则、旧版防火墙规则和旧版速率限制；Cloudflare 已弃用的接口可能不可用' },
+      { id: 'del-rules', name: '规则清除', full: 'CloudFlare 批量删除旧版规则', desc: '删除页面规则、旧版防火墙规则和旧版速率限制；操作不可撤销' }
     ]
   },
   {
@@ -399,7 +392,11 @@ window.testAccount = async () => {
     if (data.success) {
       alertBox.innerHTML = '<div class="alert alert-success border-0 py-2 mt-2 fw-bold small mb-0">✅ 连接测试成功</div>';
     } else {
-      alertBox.innerHTML = `<div class="alert alert-danger border-0 py-2 mt-2 fw-bold small mb-0">❌ 失败: ${data.message}</div>`;
+      alertBox.replaceChildren();
+      const message = document.createElement('div');
+      message.className = 'alert alert-danger border-0 py-2 mt-2 fw-bold small mb-0';
+      message.textContent = `❌ 失败: ${data.message || '未知错误'}`;
+      alertBox.appendChild(message);
     }
   } catch (e) {
     alertBox.innerHTML = '<div class="alert alert-danger border-0 py-2 mt-2 fw-bold small mb-0">❌ 请求服务器错误</div>';
@@ -420,7 +417,7 @@ window.testExistingAccount = async (id, btn) => {
     const res = await fetch('/api/accounts/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': state.token || localStorage.getItem('token') },
-      body: JSON.stringify({ email: acc.email, key: acc.key })
+      body: JSON.stringify({ id })
     });
     const data = await res.json();
 
@@ -446,21 +443,6 @@ window.testExistingAccount = async (id, btn) => {
   } finally {
     btn.disabled = false;
     btn.innerText = originalText;
-  }
-};
-
-window.toggleKey = (id, el) => {
-  const acc = window.accountsCache.find(a => a.id === id);
-  if (!acc) return;
-  const isMasked = el.innerText.startsWith('****');
-  if (isMasked) {
-    el.innerText = acc.key;
-    el.classList.remove('text-azure');
-    el.classList.add('text-dark');
-  } else {
-    el.innerText = `****${acc.key.slice(-4)}`;
-    el.classList.remove('text-dark');
-    el.classList.add('text-azure');
   }
 };
 
