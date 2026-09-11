@@ -87,3 +87,17 @@ func TestOfflineDNSDoesNotRequireAccountOrNetwork(t *testing.T) {
 		t.Fatalf("offline DNS did not report success: %s", recorder.Body.String())
 	}
 }
+
+func TestNormalizeRecordName(t *testing.T) {
+	tests := map[string]string{
+		"@":                "example.com",
+		"www":              "www.example.com",
+		"WWW.EXAMPLE.COM.": "www.example.com",
+		"":                 "",
+	}
+	for host, expected := range tests {
+		if actual := normalizeRecordName("Example.COM.", host); actual != expected {
+			t.Errorf("normalizeRecordName(%q)=%q, want %q", host, actual, expected)
+		}
+	}
+}

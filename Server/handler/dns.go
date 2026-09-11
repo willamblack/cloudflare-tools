@@ -177,7 +177,7 @@ func addDNSRecord(acc *models.Account, record DNSRecord, ttl int, proxied bool, 
 	}
 
 	if deleteOld {
-		if err := deleteExistingRecords(acc, zoneID, record.Host, record.Type); err != nil {
+		if err := deleteExistingRecords(acc, zoneID, record.Domain, record.Host, record.Type); err != nil {
 			return false, "Delete old records failed: " + err.Error()
 		}
 	}
@@ -268,8 +268,8 @@ func getZoneID(acc *models.Account, domain string) (string, error) {
 	return result.Result[0].ID, nil
 }
 
-func deleteExistingRecords(acc *models.Account, zoneID string, name string, recordType string) error {
-	records, err := listDNSRecords(acc, zoneID, recordType, name)
+func deleteExistingRecords(acc *models.Account, zoneID, domain, name, recordType string) error {
+	records, err := listDNSRecords(acc, zoneID, recordType, normalizeRecordName(domain, name))
 	if err != nil {
 		return err
 	}
@@ -334,7 +334,7 @@ func deleteDNSRecords(acc *models.Account, domain string, recordType string, hos
 	if deleteAll {
 		recordType, hostRecord = "", ""
 	}
-	records, err := listDNSRecords(acc, zoneID, recordType, hostRecord)
+	records, err := listDNSRecords(acc, zoneID, recordType, normalizeRecordName(domain, hostRecord))
 	if err != nil {
 		return false, err.Error(), 0
 	}
@@ -405,7 +405,7 @@ func toggleProxyStatus(acc *models.Account, domain string, recordType string, ho
 		return false, err.Error(), 0
 	}
 
-	records, err := listDNSRecords(acc, zoneID, recordType, hostRecord)
+	records, err := listDNSRecords(acc, zoneID, recordType, normalizeRecordName(domain, hostRecord))
 	if err != nil {
 		return false, err.Error(), 0
 	}
@@ -493,4 +493,19 @@ func deleteCloudflareDNSRecord(acc *models.Account, zoneID, recordID string) err
 		return fmt.Errorf("Cloudflare returned HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func normalizeRecordName(domain, host string) string {
+	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return ""
+	}
+	if host == "@" {
+		return domain
+	}
+	if host == domain || strings.HasSuffix(host, "."+domain) {
+		return host
+	}
+	return host + "." + domain
 }
