@@ -58,3 +58,32 @@ func TestAccountStorePersistsSecurelyAndConcurrently(t *testing.T) {
 		t.Fatal("deleted account reappeared after reload")
 	}
 }
+
+func TestUpdateAccountPreservesOrReplacesKey(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	if err := LoadAccounts(); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpsertAccount(Account{ID: "one", Name: "old", Email: "old@example.com", Key: "old-secret"}); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, found, err := UpdateAccount("one", "new", "new@example.com", "")
+	if err != nil || !found || updated.Key != "old-secret" {
+		t.Fatalf("blank key should preserve existing secret: %#v, %v, %v", updated, found, err)
+	}
+	updated, found, err = UpdateAccount("one", "newer", "newer@example.com", "new-secret")
+	if err != nil || !found || updated.Key != "new-secret" {
+		t.Fatalf("nonblank key should replace secret: %#v, %v, %v", updated, found, err)
+	}
+	if _, found, err := UpdateAccount("missing", "x", "x@example.com", ""); found || err != nil {
+		t.Fatalf("missing account returned found=%v err=%v", found, err)
+	}
+	if err := LoadAccounts(); err != nil {
+		t.Fatal(err)
+	}
+	stored, ok := FindAccount("one")
+	if !ok || stored.Name != "newer" || stored.Email != "newer@example.com" || stored.Key != "new-secret" {
+		t.Fatalf("updated account did not survive reload: %#v", stored)
+	}
+}

@@ -341,7 +341,8 @@ async function renderDashboard() {
               </div>
               <div class="col-12 mb-2">
                 <label class="form-label fw-bold mb-1">Global API Key</label>
-                <input type="text" id="acc-key" class="form-control form-control-lg border-2 shadow-none" placeholder="输入 37 位 API 令牌">
+                <input type="password" id="acc-key" class="form-control form-control-lg border-2 shadow-none" autocomplete="new-password" placeholder="输入 Global API Key">
+                <div class="form-hint" id="acc-key-hint"></div>
               </div>
             </div>
             <div id="test-alert"></div>
@@ -349,7 +350,7 @@ async function renderDashboard() {
           <div class="modal-footer">
             <button type="button" class="btn btn-link link-secondary fw-bold" data-bs-dismiss="modal" style="text-decoration: none;">取消操作</button>
             <button type="button" id="btn-test" class="btn btn-outline-primary ms-auto px-4" onclick="window.testAccount()">测试连接</button>
-            <button type="button" class="btn btn-primary px-4" onclick="window.saveAccount()">保存账号</button>
+            <button type="button" class="btn btn-primary px-4" id="btn-save-account" onclick="window.saveAccount()">保存账号</button>
           </div>
         </div>
       </div>
@@ -369,13 +370,32 @@ window.resetModal = () => {
   document.getElementById('acc-name').value = '';
   document.getElementById('acc-email').value = '';
   document.getElementById('acc-key').value = '';
+  document.getElementById('acc-key').placeholder = '输入 Global API Key';
+  document.getElementById('acc-key-hint').textContent = '';
   document.getElementById('test-alert').innerHTML = '';
+};
+
+window.editAccount = (id) => {
+  const acc = window.accountsCache?.find(account => account.id === id);
+  if (!acc) return;
+  state.editingId = id;
+  document.getElementById('modal-title').innerText = '编辑 Cloudflare 账号';
+  document.getElementById('acc-name').value = acc.name;
+  document.getElementById('acc-email').value = acc.email;
+  document.getElementById('acc-key').value = '';
+  document.getElementById('acc-key').placeholder = '留空则保留现有密钥';
+  document.getElementById('acc-key-hint').textContent = '现有密钥不会回传浏览器；留空可保留，填写新密钥才会替换。';
+  document.getElementById('test-alert').replaceChildren();
 };
 
 window.testAccount = async () => {
   const email = document.getElementById('acc-email').value;
   const key = document.getElementById('acc-key').value;
-  if (!email || !key) return alert('请先填写 Email 和 API Key');
+  if (!email || (!key && !state.editingId)) return alert('请先填写 Email 和 API Key');
+  if (state.editingId && !key) {
+    const current = window.accountsCache?.find(account => account.id === state.editingId);
+    if (current?.email !== email) return alert('邮箱已更改；请先保存，再测试现有密钥，或输入新 Key 测试。');
+  }
 
   const btn = document.getElementById('btn-test');
   const alertBox = document.getElementById('test-alert');
@@ -386,7 +406,7 @@ window.testAccount = async () => {
     const res = await fetch('/api/accounts/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': state.token || localStorage.getItem('token') },
-      body: JSON.stringify({ email, key })
+      body: JSON.stringify(key ? { email, key } : { id: state.editingId })
     });
     const data = await res.json();
     if (data.success) {
@@ -447,35 +467,57 @@ window.testExistingAccount = async (id, btn) => {
 };
 
 window.saveAccount = async () => {
-  const name = document.getElementById('acc-name').value;
-  const email = document.getElementById('acc-email').value;
+  const name = document.getElementById('acc-name').value.trim();
+  const email = document.getElementById('acc-email').value.trim();
   const key = document.getElementById('acc-key').value;
-  if (!name || !email || !key) return alert('信息填完整');
+  if (!name || !email || (!state.editingId && !key)) return alert('请填写账号备注、邮箱和新账号的 API Key');
 
-  const res = await fetch('/api/accounts', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': state.token || localStorage.getItem('token') },
-    body: JSON.stringify({ id: state.editingId, name, email, key })
-  });
+  const btn = document.getElementById('btn-save-account');
+  btn.disabled = true;
+  try {
+    const editingId = state.editingId;
+    const res = await fetch(editingId ? `/api/accounts/${encodeURIComponent(editingId)}` : '/api/accounts', {
+      method: editingId ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': state.token || localStorage.getItem('token') },
+      body: JSON.stringify({ name, email, key })
+    });
 
-  if (res.ok) {
+    if (!res.ok) {
+      const result = await res.json().catch(() => ({}));
+      if (window.handleAuthError(res)) return;
+      alert(`保存失败：${result.error || `HTTP ${res.status}`}`);
+      return;
+    }
+    if (editingId) AccountsModule.accountStatuses.delete(editingId);
     const modalEl = document.getElementById('modal-account');
     const modal = window.bootstrap?.Modal?.getInstance(modalEl);
     if (modal) modal.hide();
-    else {
-      const closeBtn = modalEl.querySelector('.btn-close');
-      if (closeBtn) closeBtn.click();
-    }
+    else modalEl.querySelector('.btn-close')?.click();
     renderModuleContent();
-  } else {
-    alert('保存失败');
+  } catch (error) {
+    alert('保存失败：网络请求错误');
+  } finally {
+    btn.disabled = false;
   }
 };
 
 window.deleteAccount = async (id) => {
-  if (confirm('确定要删除个账号吗？此操作无法撤销。')) {
-    await fetch(`/api/accounts/${id}`, { method: 'DELETE', headers: { 'Authorization': state.token || localStorage.getItem('token') } });
+  if (!confirm('确定要删除这个账号吗？此操作无法撤销。')) return;
+  try {
+    const response = await fetch(`/api/accounts/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': state.token || localStorage.getItem('token') }
+    });
+    if (!response.ok) {
+      if (window.handleAuthError(response)) return;
+      alert(`删除失败：HTTP ${response.status}`);
+      return;
+    }
+    AccountsModule.accountStatuses.delete(id);
+    AccountsModule.selectedAccounts.delete(id);
     renderModuleContent();
+  } catch (error) {
+    alert('删除失败：网络请求错误');
   }
 };
 

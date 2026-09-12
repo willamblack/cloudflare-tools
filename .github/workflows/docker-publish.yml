@@ -115,6 +115,21 @@ jobs:
           test -n "$token"
           test "$(curl --fail --silent --show-error --header "Authorization: Bearer $token" \
             http://127.0.0.1:18080/api/accounts)" = "[]"
+          created="$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $token" --header 'Content-Type: application/json' \
+            --data '{"name":"smoke","email":"smoke@example.com","key":"fake-smoke-key"}' \
+            http://127.0.0.1:18080/api/accounts)"
+          account_id="$(jq --raw-output .id <<< "$created")"
+          test -n "$account_id"
+          test "$(jq --raw-output .key <<< "$created")" = ""
+          edited="$(curl --fail --silent --show-error --request PUT \
+            --header "Authorization: Bearer $token" --header 'Content-Type: application/json' \
+            --data '{"name":"smoke-edited","email":"edited@example.com","key":""}' \
+            "http://127.0.0.1:18080/api/accounts/$account_id")"
+          test "$(jq --raw-output .name <<< "$edited")" = "smoke-edited"
+          test "$(jq --raw-output .key <<< "$edited")" = ""
+          test "$(curl --fail --silent --show-error --header "Authorization: Bearer $token" \
+            http://127.0.0.1:18080/api/accounts | jq --raw-output '.[0].email')" = "edited@example.com"
 
   publish:
     name: Build and publish image

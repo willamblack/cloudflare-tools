@@ -51,8 +51,11 @@ docker pull ghcr.io/willamblack/cloudflare-tools:0.01
 准备配置和持久化目录（`accounts.json` 和证书也会保存在这个目录）：
 
 ```bash
+umask 077
 mkdir -p data/certs
 cp Server/config.yaml.example data/config.yaml
+chmod 700 data data/certs
+chmod 600 data/config.yaml
 ```
 
 修改 `data/config.yaml` 中的管理员用户名和密码后启动：
@@ -61,7 +64,7 @@ cp Server/config.yaml.example data/config.yaml
 docker run -d \
   --name cloudflare-tools \
   --restart unless-stopped \
-  -p 28080:8080 \
+  -p 127.0.0.1:28080:8080 \
   -e TZ=Asia/Shanghai \
   -e DATA_DIR=/data \
   -e JWT_SECRET="$(openssl rand -hex 32)" \
@@ -74,7 +77,7 @@ docker run -d \
   ghcr.io/willamblack/cloudflare-tools:0.01
 ```
 
-也可以不挂载配置文件，改用 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 环境变量。`JWT_SECRET` 至少 32 个字符；未设置时程序会随机生成，但重启会使已有登录失效。首次发布后，如需匿名 `docker pull`，请在 GitHub 包设置中将 Container package 可见性改为 Public。GitHub Actions 使用仓库自带的 `GITHUB_TOKEN` 发布，不需要额外创建 PAT。
+也可以不挂载配置文件，改用 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 环境变量，但环境变量可被有 Docker 管理权限的人通过容器配置查看，不等于加密存储。`JWT_SECRET` 至少 32 个字符；未设置时程序会随机生成，但重启会使已有登录失效。GHCR 镜像 `0.01` 已公开，可匿名拉取。GitHub Actions 使用仓库自带的 `GITHUB_TOKEN` 发布，不需要额外创建 PAT。
 
 #### 本地构建
 
@@ -82,8 +85,11 @@ docker run -d \
 
 2. 配置管理员账号
 ```bash
+umask 077
 mkdir -p data/certs
 cp Server/config.yaml.example data/config.yaml
+chmod 700 data data/certs
+chmod 600 data/config.yaml
 # 编辑 data/config.yaml 设置管理员用户名和密码
 ```
 
@@ -113,7 +119,9 @@ cd cloudflare-tools
 
 2. 配置管理员账号
 ```bash
+umask 077
 cp Server/config.yaml.example Server/config.yaml
+chmod 600 Server/config.yaml
 # 编辑 Server/config.yaml，必须替换 CHANGE_ME
 ```
 
@@ -156,7 +164,9 @@ admin:
 - `JWT_SECRET`：JWT HMAC 密钥，至少 32 字符
 - `DATA_DIR`：`config.yaml`、`accounts.json` 和 `certs/` 的持久化目录
 
-账号 API Key 保存在 `${DATA_DIR}/accounts.json`，程序以 `0600` 权限原子更新。请对 `data/` 做访问控制和备份。证书 ZIP 包含私钥，只能在登录后下载。
+管理员密码目前以明文保存在 `config.yaml`；程序会拒绝组或其他用户可读的配置文件，请设为 `0600`，目录设为 `0700`。`Server/config.yaml`、`data/config.yaml` 和 `data/` 运行数据不再纳入 Git 跟踪；仓库仅保留 `Server/config.yaml.example`。
+
+账号 Global API Key 目前以明文保存在 `${DATA_DIR}/accounts.json`，程序以 `0600` 权限原子更新，API 列表与编辑界面不会回传现有 Key。`0600` 不是静态加密：宿主机管理员、容器 root、拥有 Docker 权限的人，以及未加密备份仍可读取。请限制 Docker/宿主机访问，使用加密磁盘与加密备份，并通过 HTTPS 反向代理访问 Web UI；不要把 8080 端口直接暴露在公网。证书 ZIP 包含私钥，只能在登录后下载。
 
 ### CloudFlare API 密钥
 
@@ -165,6 +175,8 @@ admin:
 2. 进入 "我的个人资料" > "API 令牌"
 3. 查看 "Global API Key"
 4. 在工具中添加邮箱和 API Key
+
+账号管理支持单个账号编辑：可以修改备注和邮箱；Global API Key 留空会保留旧 Key，填写新值才会替换。现有 Key 不会在浏览器中显示。
 
 当前版本使用 Cloudflare Global API Key 兼容旧接口。该密钥权限很高，请使用专用 Cloudflare 账号、限制部署主机访问，并避免把 `data/accounts.json` 提交到 Git。
 

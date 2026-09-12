@@ -38,6 +38,7 @@ export class AccountsModule {
         }
 
         const totalPages = this.pageSize === 'all' ? 1 : Math.ceil(filteredAccounts.length / this.pageSize);
+        this.currentPage = Math.max(1, Math.min(this.currentPage, totalPages || 1));
         const startIndex = this.pageSize === 'all' ? 0 : (this.currentPage - 1) * this.pageSize;
         const endIndex = this.pageSize === 'all' ? filteredAccounts.length : startIndex + this.pageSize;
         const paginatedAccounts = filteredAccounts.slice(startIndex, endIndex);
@@ -142,11 +143,12 @@ export class AccountsModule {
                   <td><div class="fw-bold text-dark">${escapeHTML(acc.name)}</div></td>
                   <td class="text-secondary">${escapeHTML(acc.email)}</td>
                   <td>
-                    <code class="bg-azure-lt border-0 px-2 py-1 rounded text-azure fw-bold">已安全保存</code>
+                    <code class="bg-azure-lt border-0 px-2 py-1 rounded text-azure fw-bold">已保存（不回显）</code>
                   </td>
                   <td>${statusBadge}</td>
                   <td>
                     <div class="d-flex justify-content-center gap-2">
+                      <button class="btn btn-outline-primary btn-sm px-3 account-edit" data-id="${escapeHTML(acc.id)}" data-bs-toggle="modal" data-bs-target="#modal-account">编辑</button>
                       <button class="btn btn-secondary btn-sm px-3 account-test" data-id="${escapeHTML(acc.id)}">测试</button>
                       <button class="btn btn-danger btn-sm px-3 account-delete" data-id="${escapeHTML(acc.id)}">删除</button>
                     </div>
@@ -224,9 +226,13 @@ export class AccountsModule {
         const searchInput = container.querySelector('#search-accounts');
         if (searchInput) {
             searchInput.addEventListener('input', (e) => {
+                const cursor = e.target.selectionStart;
                 this.searchQuery = e.target.value;
                 this.currentPage = 1;
                 this.renderContent(container, allAccounts);
+                const replacement = container.querySelector('#search-accounts');
+                replacement?.focus();
+                replacement?.setSelectionRange(cursor, cursor);
             });
         }
 
@@ -310,6 +316,9 @@ export class AccountsModule {
 		container.querySelectorAll('.account-test').forEach(btn => {
 			btn.addEventListener('click', () => window.testExistingAccount(btn.dataset.id, btn));
 		});
+		container.querySelectorAll('.account-edit').forEach(btn => {
+			btn.addEventListener('click', () => window.editAccount(btn.dataset.id));
+		});
 		container.querySelectorAll('.account-delete').forEach(btn => {
 			btn.addEventListener('click', () => window.deleteAccount(btn.dataset.id));
 		});
@@ -389,26 +398,46 @@ export class AccountsModule {
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>删除中...';
 
+        const failedIds = new Set();
         for (const id of this.selectedAccounts) {
             try {
-                await fetch(`/api/accounts/${id}`, { 
+                const response = await fetch(`/api/accounts/${encodeURIComponent(id)}`, {
                     method: 'DELETE', 
                     headers: { 'Authorization': localStorage.getItem('token') } 
                 });
-                this.accountStatuses.delete(id);
+                if (!response.ok) {
+                    if (window.handleAuthError(response)) return;
+                    failedIds.add(id);
+                } else {
+                    this.accountStatuses.delete(id);
+                }
             } catch (e) {
-                console.error('Delete error:', e);
+                failedIds.add(id);
             }
         }
 
-        this.selectedAccounts.clear();
+        this.selectedAccounts = failedIds;
+        btn.disabled = false;
+        btn.innerHTML = originalText;
         
-        const res = await fetch('/api/accounts', { 
-            headers: { 'Authorization': localStorage.getItem('token') } 
-        });
-        const updatedData = await res.json();
+        let updatedData;
+        try {
+            const res = await fetch('/api/accounts', {
+                headers: { 'Authorization': localStorage.getItem('token') }
+            });
+            if (!res.ok) {
+                if (window.handleAuthError(res)) return;
+                alert('删除后刷新账号列表失败，请重试');
+                return;
+            }
+            updatedData = await res.json();
+        } catch (error) {
+            alert('删除后刷新账号列表失败，请重试');
+            return;
+        }
         window.accountsCache = updatedData;
 
         this.renderContent(container, updatedData);
+        if (failedIds.size > 0) alert(`${failedIds.size} 个账号删除失败，已保留勾选，请重试。`);
     }
 }

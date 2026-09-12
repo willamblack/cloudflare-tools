@@ -45,6 +45,7 @@ COPY LICENSE /usr/share/licenses/cloudflare-tools/LICENSE
 
 ENV PATH="/root/.acme.sh:${PATH}"
 ENV DATA_DIR=/data
+ENV GIN_MODE=release
 
 WORKDIR /data
 

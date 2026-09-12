@@ -7,7 +7,7 @@ services:
     container_name: cloudflare-tools
     restart: unless-stopped
     ports:
-      - "28080:8080"
+      - "127.0.0.1:28080:8080"
     volumes:
       - ./data:/data
       - acme-data:/root/.acme.sh

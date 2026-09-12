@@ -34,6 +34,13 @@ func LoadConfig() error {
 	for _, configPath := range configPaths {
 		data, readErr = os.ReadFile(configPath)
 		if readErr == nil {
+			info, err := os.Stat(configPath)
+			if err != nil {
+				return fmt.Errorf("stat config: %w", err)
+			}
+			if info.Mode().Perm()&0077 != 0 {
+				return fmt.Errorf("admin config %s must not be readable by group or others; run chmod 600", configPath)
+			}
 			break
 		}
 		if !os.IsNotExist(readErr) {

@@ -27,3 +27,8 @@ dist-ssr
 releases
 Test
 AGENTS.md
+
+# Runtime secrets and generated data (keep only *.example in Git)
+/data/
+/Server/config.yaml
+/Server/accounts.json

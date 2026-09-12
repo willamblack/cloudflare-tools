@@ -71,6 +71,7 @@ func newRouter() *gin.Engine {
 	{
 		api.GET("/accounts", handler.ListAccounts)
 		api.POST("/accounts", handler.AddAccount)
+		api.PUT("/accounts/:id", handler.UpdateAccount)
 		api.POST("/accounts/test", handler.TestAccount)
 		api.DELETE("/accounts/:id", handler.DeleteAccount)
 		api.POST("/zones/batch-add", handler.BatchAddZones)

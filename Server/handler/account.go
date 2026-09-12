@@ -30,6 +30,10 @@ func AddAccount(c *gin.Context) {
 		return
 	}
 
+	if acc.ID != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Use PUT /api/accounts/:id to edit an account"})
+		return
+	}
 	acc.Email = strings.TrimSpace(acc.Email)
 	acc.Name = strings.TrimSpace(acc.Name)
 	if acc.Email == "" || acc.Name == "" {
@@ -37,25 +41,43 @@ func AddAccount(c *gin.Context) {
 		return
 	}
 
-	if acc.ID != "" {
-		existing, found := models.FindAccount(acc.ID)
-		if !found {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
-			return
-		}
-		if acc.Key == "" {
-			acc.Key = existing.Key
-		}
-	} else {
-		if acc.Key == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "API key is required"})
-			return
-		}
-		acc.ID = uuid.New().String()
+	if acc.Key == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "API key is required"})
+		return
 	}
+	acc.ID = uuid.New().String()
 
 	if err := models.UpsertAccount(acc); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	acc.Key = ""
+	c.JSON(http.StatusOK, acc)
+}
+
+func UpdateAccount(c *gin.Context) {
+	var edit struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+		Key   string `json:"key"`
+	}
+	if err := c.ShouldBindJSON(&edit); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid account data"})
+		return
+	}
+	name := strings.TrimSpace(edit.Name)
+	email := strings.TrimSpace(edit.Email)
+	if name == "" || email == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Name and email are required"})
+		return
+	}
+	acc, found, err := models.UpdateAccount(c.Param("id"), name, email, edit.Key)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to save account"})
+		return
+	}
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
 		return
 	}
 	acc.Key = ""
@@ -111,19 +133,28 @@ func TestAccount(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK {
-		c.JSON(http.StatusOK, gin.H{"success": true})
-	} else {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxCloudflareResponseBytes))
-		var apiError struct {
-			Errors []struct {
-				Message string `json:"message"`
-			} `json:"errors"`
-		}
-		message := fmt.Sprintf("校验失败 (HTTP %d)", resp.StatusCode)
-		if json.Unmarshal(body, &apiError) == nil && len(apiError.Errors) > 0 {
-			message += ": " + apiError.Errors[0].Message
-		}
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": message})
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCloudflareResponseBytes))
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "无法读取 Cloudflare 响应"})
+		return
 	}
+	var apiResult struct {
+		Success bool `json:"success"`
+		Errors  []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &apiResult); err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "Cloudflare 响应格式无效"})
+		return
+	}
+	if resp.StatusCode == http.StatusOK && apiResult.Success {
+		c.JSON(http.StatusOK, gin.H{"success": true})
+		return
+	}
+	message := fmt.Sprintf("校验失败 (HTTP %d)", resp.StatusCode)
+	if len(apiResult.Errors) > 0 {
+		message += ": " + apiResult.Errors[0].Message
+	}
+	c.JSON(http.StatusOK, gin.H{"success": false, "message": message})
 }

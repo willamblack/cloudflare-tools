@@ -3,14 +3,20 @@
 echo "==> Cloudflare Tools Docker 部署脚本"
 
 set -eu
+umask 077
 
 if [ ! -f "data/config.yaml" ]; then
     echo "==> 复制配置文件模板..."
     mkdir -p data
     cp Server/config.yaml.example data/config.yaml
+    chmod 700 data
+    chmod 600 data/config.yaml
     echo "请编辑 data/config.yaml 设置管理员账号密码"
     exit 1
 fi
+
+chmod 700 data
+chmod 600 data/config.yaml
 
 if grep -q "CHANGE_ME\|admin123" data/config.yaml; then
     echo "错误: data/config.yaml 仍使用默认密码，请先修改。"
@@ -19,6 +25,7 @@ fi
 
 echo "==> 创建数据目录..."
 mkdir -p data/certs
+chmod 700 data/certs
 
 echo "==> 构建并启动容器..."
 docker compose up -d --build

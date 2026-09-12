@@ -35,3 +35,17 @@ func TestLoadConfigRejectsDefaultPassword(t *testing.T) {
 		t.Fatalf("expected default password rejection, got %v", err)
 	}
 }
+
+func TestLoadConfigRejectsWorldReadablePasswordFile(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("DATA_DIR", dataDir)
+	t.Setenv("ADMIN_USERNAME", "")
+	t.Setenv("ADMIN_PASSWORD", "")
+	path := filepath.Join(dataDir, "config.yaml")
+	if err := os.WriteFile(path, []byte("admin:\n  username: admin\n  password: strong-test-password\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("expected unsafe permissions to be rejected, got %v", err)
+	}
+}

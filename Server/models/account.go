@@ -88,6 +88,32 @@ func UpsertAccount(account Account) error {
 	return nil
 }
 
+// UpdateAccount changes one existing account while keeping its saved key when
+// the edit form leaves the replacement key empty. The read and write happen
+// under one lock so a concurrent edit cannot restore a stale key.
+func UpdateAccount(id, name, email, key string) (Account, bool, error) {
+	accountsMu.Lock()
+	defer accountsMu.Unlock()
+
+	next := append([]Account(nil), accounts...)
+	for i := range next {
+		if next[i].ID != id {
+			continue
+		}
+		next[i].Name = name
+		next[i].Email = email
+		if key != "" {
+			next[i].Key = key
+		}
+		if err := saveAccounts(next); err != nil {
+			return Account{}, true, err
+		}
+		accounts = next
+		return next[i], true, nil
+	}
+	return Account{}, false, nil
+}
+
 func DeleteAccount(id string) (bool, error) {
 	accountsMu.Lock()
 	defer accountsMu.Unlock()
