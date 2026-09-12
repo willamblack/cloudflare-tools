@@ -166,7 +166,7 @@ admin:
 
 管理员密码目前以明文保存在 `config.yaml`；程序会拒绝组或其他用户可读的配置文件，请设为 `0600`，目录设为 `0700`。`Server/config.yaml`、`data/config.yaml`、`.env` 和证书运行数据不再纳入 Git 跟踪；仓库仅保留 `Server/config.yaml.example`。若曾把真实密码或 Key 推送到 GitHub，仅添加忽略规则无法清除历史记录，必须立即轮换泄露的凭据。
 
-账号 Global API Key 目前以明文保存在 `${DATA_DIR}/accounts.json`，程序以 `0600` 权限原子更新，API 列表与编辑界面不会回传现有 Key。`0600` 不是静态加密：宿主机管理员、容器 root、拥有 Docker 权限的人，以及未加密备份仍可读取。请限制 Docker/宿主机访问，使用加密磁盘与加密备份，并通过 HTTPS 反向代理访问 Web UI；不要把 8080 端口直接暴露在公网。证书 ZIP 包含私钥，只能在登录后下载。
+账号 Global API Key 目前以明文保存在 `${DATA_DIR}/accounts.json`，程序以 `0600` 权限原子更新，API 列表与编辑界面不会回传现有 Key。**申请证书时**，acme.sh 的 `dns_cf` 插件还会把 `CF_Key` 和 `CF_Email` 保存在 `/root/.acme.sh/account.conf`（Compose 中的 `acme-data` 卷）；编辑或删除应用内账号不会自动删除这份副本，盲目清除也可能影响今后续期。`0600` 不是静态加密：宿主机管理员、容器 root、拥有 Docker 权限的人，以及未加密备份仍可读取。请同时保护 `data/` 和 ACME 卷，使用加密磁盘与加密备份，并通过 HTTPS 反向代理访问 Web UI；不要把 8080 端口直接暴露在公网。证书 ZIP 包含私钥，只能在登录后下载。
 
 ### CloudFlare API 密钥
 
