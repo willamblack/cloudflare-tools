@@ -12,9 +12,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Docker tag to publish (for example, 0.01)
+        description: Docker tag to publish (for example, 0.02)
         required: true
-        default: "0.01"
+        default: "0.02"
         type: string
       publish_latest:
         description: Also update latest (normally only stable Git tags should do this)
@@ -53,6 +53,7 @@ jobs:
           npm ci
           npm test
           npm run build
+          npm audit --audit-level=moderate
 
       - name: Prepare embedded frontend
         run: cp -R Frontend/dist Server/dist
@@ -65,7 +66,7 @@ jobs:
 
       - name: Test backend
         working-directory: Server
-        run: go test ./...
+        run: go test -race ./...
 
       - name: Vet backend
         working-directory: Server

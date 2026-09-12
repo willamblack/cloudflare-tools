@@ -5,6 +5,7 @@ import (
 	"cloudflare-tools/server/models"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"sync"
@@ -240,19 +241,32 @@ func fetchAllZones(acc *models.Account) ([]ExportZoneResult, error) {
 
 	for {
 		url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones?page=%d&per_page=%d", page, perPage)
-		req, _ := http.NewRequest("GET", url, nil)
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create Cloudflare request: %w", err)
+		}
 		req.Header.Add("X-Auth-Email", acc.Email)
 		req.Header.Add("X-Auth-Key", acc.Key)
 
-		client := cloudflareClient
-		resp, err := client.Do(req)
+		resp, err := cloudflareClient.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("Request failed")
+			return nil, fmt.Errorf("Cloudflare request failed: %w", err)
 		}
-		defer resp.Body.Close()
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxCloudflareResponseBytes+1))
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read Cloudflare response: %w", readErr)
+		}
+		if len(body) > maxCloudflareResponseBytes {
+			return nil, fmt.Errorf("Cloudflare response too large")
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("Cloudflare returned HTTP %d", resp.StatusCode)
+		}
 
 		var result struct {
-			Result []struct {
+			Success bool `json:"success"`
+			Result  []struct {
 				Name        string   `json:"name"`
 				Status      string   `json:"status"`
 				NameServers []string `json:"name_servers"`
@@ -264,8 +278,12 @@ func fetchAllZones(acc *models.Account) ([]ExportZoneResult, error) {
 			} `json:"result_info"`
 		}
 
-		body, _ := ioutil.ReadAll(resp.Body)
-		json.Unmarshal(body, &result)
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("invalid Cloudflare response: %w", err)
+		}
+		if !result.Success {
+			return nil, fmt.Errorf("Cloudflare rejected zone export")
+		}
 
 		for _, zone := range result.Result {
 			allZones = append(allZones, ExportZoneResult{

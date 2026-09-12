@@ -5,6 +5,7 @@ import (
 	"cloudflare-tools/server/models"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -77,6 +78,7 @@ type cloudflareDNSRecord struct {
 }
 
 type cloudflareDNSListResponse struct {
+	Success    bool                  `json:"success"`
 	Result     []cloudflareDNSRecord `json:"result"`
 	ResultInfo struct {
 		Page       int `json:"page"`
@@ -248,7 +250,8 @@ func getZoneID(acc *models.Account, domain string) (string, error) {
 	defer resp.Body.Close()
 
 	var result struct {
-		Result []struct {
+		Success bool `json:"success"`
+		Result  []struct {
 			ID string `json:"id"`
 		} `json:"result"`
 	}
@@ -259,6 +262,9 @@ func getZoneID(acc *models.Account, domain string) (string, error) {
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return "", fmt.Errorf("Invalid Cloudflare response")
+	}
+	if !result.Success {
+		return "", fmt.Errorf("Cloudflare rejected zone lookup")
 	}
 
 	if len(result.Result) == 0 {
@@ -349,10 +355,10 @@ func deleteDNSRecords(acc *models.Account, domain string, recordType string, hos
 		}
 	}
 
-	if count > 0 {
+	if count == len(records) {
 		return true, fmt.Sprintf("Deleted %d records", count), count
 	}
-	return false, "Failed to delete records", 0
+	return false, fmt.Sprintf("Deleted %d of %d records; some deletions failed", count, len(records)), count
 }
 
 func BatchProxyToggle(c *gin.Context) {
@@ -473,6 +479,9 @@ func listDNSRecords(acc *models.Account, zoneID, recordType, name string) ([]clo
 		if decodeErr != nil {
 			return nil, fmt.Errorf("invalid Cloudflare response")
 		}
+		if !result.Success {
+			return nil, fmt.Errorf("Cloudflare rejected DNS record list")
+		}
 		records = append(records, result.Result...)
 		if len(result.Result) < 100 || (result.ResultInfo.TotalPages > 0 && page >= result.ResultInfo.TotalPages) {
 			return records, nil
@@ -491,6 +500,15 @@ func deleteCloudflareDNSRecord(acc *models.Account, zoneID, recordID string) err
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("Cloudflare returned HTTP %d", resp.StatusCode)
+	}
+	var result struct {
+		Success bool `json:"success"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxCloudflareResponseBytes)).Decode(&result); err != nil {
+		return fmt.Errorf("invalid Cloudflare response: %w", err)
+	}
+	if !result.Success {
+		return fmt.Errorf("Cloudflare rejected DNS record deletion")
 	}
 	return nil
 }

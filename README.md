@@ -42,10 +42,10 @@
 
 #### 使用 GHCR 预构建镜像
 
-推送到 `main` 分支发布 `edge`，不会覆盖稳定版。推送稳定 Git 标签 `v0.01` 时会同时发布 `0.01`、`v0.01` 和 `latest`；也可以在 GitHub Actions 中手动填写版本，手动发布默认不更新 `latest`。
+推送到 `main` 分支发布 `edge`，不会覆盖稳定版。推送稳定 Git 标签 `v0.02` 时会同时发布 `0.02`、`v0.02` 和 `latest`；原有 `0.01` 保持不变。也可以在 GitHub Actions 中手动填写版本，手动发布默认不更新 `latest`。
 
 ```bash
-docker pull ghcr.io/willamblack/cloudflare-tools:0.01
+docker pull ghcr.io/willamblack/cloudflare-tools:0.02
 ```
 
 准备配置和持久化目录（`accounts.json` 和证书也会保存在这个目录）：
@@ -74,10 +74,10 @@ docker run -d \
   --tmpfs /tmp:size=64m,mode=1777 \
   -v "$(pwd)/data:/data" \
   -v cloudflare-tools-acme:/root/.acme.sh \
-  ghcr.io/willamblack/cloudflare-tools:0.01
+  ghcr.io/willamblack/cloudflare-tools:0.02
 ```
 
-也可以不挂载配置文件，改用 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 环境变量，但环境变量可被有 Docker 管理权限的人通过容器配置查看，不等于加密存储。`JWT_SECRET` 至少 32 个字符；未设置时程序会随机生成，但重启会使已有登录失效。GHCR 镜像 `0.01` 已公开，可匿名拉取。GitHub Actions 使用仓库自带的 `GITHUB_TOKEN` 发布，不需要额外创建 PAT。
+也可以不挂载配置文件，改用 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 环境变量，但环境变量可被有 Docker 管理权限的人通过容器配置查看，不等于加密存储。`JWT_SECRET` 至少 32 个字符；未设置时程序会随机生成，但重启会使已有登录失效。GitHub Actions 使用仓库自带的 `GITHUB_TOKEN` 发布，不需要额外创建 PAT。
 
 #### 本地构建
 
@@ -182,11 +182,11 @@ admin:
 
 ### 发布镜像
 
-首次稳定发布：
+发布当前稳定版本（先将已测试代码推送到 `main`）：
 
 ```bash
-git tag v0.01
-git push origin v0.01
+git tag v0.02
+git push origin v0.02
 ```
 
 工作流会在 `linux/amd64` 与 `linux/arm64` 上构建镜像，并先在 GitHub 托管的 Linux runner 中真实启动单架构镜像，验证健康检查、首页、登录、鉴权与账号 API。稳定标签才会更新 `latest`。
