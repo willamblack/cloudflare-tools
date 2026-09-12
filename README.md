@@ -164,7 +164,7 @@ admin:
 - `JWT_SECRET`：JWT HMAC 密钥，至少 32 字符
 - `DATA_DIR`：`config.yaml`、`accounts.json` 和 `certs/` 的持久化目录
 
-管理员密码目前以明文保存在 `config.yaml`；程序会拒绝组或其他用户可读的配置文件，请设为 `0600`，目录设为 `0700`。`Server/config.yaml`、`data/config.yaml` 和 `data/` 运行数据不再纳入 Git 跟踪；仓库仅保留 `Server/config.yaml.example`。
+管理员密码目前以明文保存在 `config.yaml`；程序会拒绝组或其他用户可读的配置文件，请设为 `0600`，目录设为 `0700`。`Server/config.yaml`、`data/config.yaml`、`.env` 和证书运行数据不再纳入 Git 跟踪；仓库仅保留 `Server/config.yaml.example`。若曾把真实密码或 Key 推送到 GitHub，仅添加忽略规则无法清除历史记录，必须立即轮换泄露的凭据。
 
 账号 Global API Key 目前以明文保存在 `${DATA_DIR}/accounts.json`，程序以 `0600` 权限原子更新，API 列表与编辑界面不会回传现有 Key。`0600` 不是静态加密：宿主机管理员、容器 root、拥有 Docker 权限的人，以及未加密备份仍可读取。请限制 Docker/宿主机访问，使用加密磁盘与加密备份，并通过 HTTPS 反向代理访问 Web UI；不要把 8080 端口直接暴露在公网。证书 ZIP 包含私钥，只能在登录后下载。
 
